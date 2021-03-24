@@ -34,6 +34,7 @@ import static java.util.stream.Collectors.toList;
 
 /**
  * Hoodie Index Utilities.
+ * Hoodie 索引库类
  */
 public class HoodieIndexUtils {
 
