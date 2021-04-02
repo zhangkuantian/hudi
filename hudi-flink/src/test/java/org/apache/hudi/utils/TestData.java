@@ -141,7 +141,7 @@ public class TestData {
           TimestampData.fromEpochMillis(8000), StringData.fromString("par4"))
   );
 
-  // merged data set of test_source.data and test_source2.data
+  // merged data set of test_source.data and test_source_2.data
   public static List<RowData> DATA_SET_SOURCE_MERGED = Arrays.asList(
       insertRow(StringData.fromString("id1"), StringData.fromString("Danny"), 24,
           TimestampData.fromEpochMillis(1000), StringData.fromString("par1")),
@@ -224,6 +224,10 @@ public class TestData {
     funcWrapper.close();
   }
 
+  private static String toStringSafely(Object obj) {
+    return obj == null ? "null" : obj.toString();
+  }
+
   /**
    * Sort the {@code rows} using field at index 0 and asserts
    * it equals with the expected string {@code expected}.
@@ -233,7 +237,7 @@ public class TestData {
    */
   public static void assertRowsEquals(List<Row> rows, String expected) {
     String rowsString = rows.stream()
-        .sorted(Comparator.comparing(o -> o.getField(0).toString()))
+        .sorted(Comparator.comparing(o -> toStringSafely(o.getField(0))))
         .collect(Collectors.toList()).toString();
     assertThat(rowsString, is(expected));
   }
@@ -247,7 +251,7 @@ public class TestData {
    */
   public static void assertRowsEquals(List<Row> rows, List<RowData> expected) {
     String rowsString = rows.stream()
-        .sorted(Comparator.comparing(o -> o.getField(0).toString()))
+        .sorted(Comparator.comparing(o -> toStringSafely(o.getField(0))))
         .collect(Collectors.toList()).toString();
     assertThat(rowsString, is(rowDataToString(expected)));
   }
