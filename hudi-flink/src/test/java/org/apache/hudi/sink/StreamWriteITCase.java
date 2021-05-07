@@ -120,8 +120,8 @@ public class StreamWriteITCase extends TestLogger {
         .map(record -> deserializationSchema.deserialize(record.getBytes(StandardCharsets.UTF_8)))
         .setParallelism(4)
         .map(new RowDataToHoodieFunction<>(rowType, conf), TypeInformation.of(HoodieRecord.class))
-        // Key-by partition path, to avoid multiple subtasks write to a partition at the same time
-        .keyBy(HoodieRecord::getPartitionPath)
+        // Key-by record key, to avoid multiple subtasks write to a bucket at the same time
+        .keyBy(HoodieRecord::getRecordKey)
         .transform(
             "bucket_assigner",
             TypeInformation.of(HoodieRecord.class),
@@ -179,8 +179,8 @@ public class StreamWriteITCase extends TestLogger {
         .name("instant_generator")
         .uid("instant_generator_id")
 
-        // Keyby partition path, to avoid multiple subtasks writing to a partition at the same time
-        .keyBy(HoodieRecord::getPartitionPath)
+        // Key-by record key, to avoid multiple subtasks write to a bucket at the same time
+        .keyBy(HoodieRecord::getRecordKey)
         // use the bucket assigner to generate bucket IDs
         .transform(
             "bucket_assigner",
@@ -243,14 +243,14 @@ public class StreamWriteITCase extends TestLogger {
     TypeInformation<String> typeInfo = BasicTypeInfo.STRING_TYPE_INFO;
     format.setCharsetName("UTF-8");
 
-    execEnv
+    DataStream<Object> pipeline = execEnv
         // use PROCESS_CONTINUOUSLY mode to trigger checkpoint
         .readFile(format, sourcePath, FileProcessingMode.PROCESS_CONTINUOUSLY, 1000, typeInfo)
         .map(record -> deserializationSchema.deserialize(record.getBytes(StandardCharsets.UTF_8)))
         .setParallelism(4)
         .map(new RowDataToHoodieFunction<>(rowType, conf), TypeInformation.of(HoodieRecord.class))
-        // Key-by partition path, to avoid multiple subtasks write to a partition at the same time
-        .keyBy(HoodieRecord::getPartitionPath)
+        // Key-by record key, to avoid multiple subtasks write to a bucket at the same time
+        .keyBy(HoodieRecord::getRecordKey)
         .transform(
             "bucket_assigner",
             TypeInformation.of(HoodieRecord.class),
@@ -259,10 +259,15 @@ public class StreamWriteITCase extends TestLogger {
         // shuffle by fileId(bucket id)
         .keyBy(record -> record.getCurrentLocation().getFileId())
         .transform("hoodie_stream_write", TypeInformation.of(Object.class), operatorFactory)
-        .uid("uid_hoodie_stream_write")
-        .transform("compact_plan_generate",
-            TypeInformation.of(CompactionPlanEvent.class),
-            new CompactionPlanOperator(conf))
+        .uid("uid_hoodie_stream_write");
+
+    pipeline.addSink(new CleanFunction<>(conf))
+        .setParallelism(1)
+        .name("clean_commits").uid("uid_clean_commits");
+
+    pipeline.transform("compact_plan_generate",
+        TypeInformation.of(CompactionPlanEvent.class),
+        new CompactionPlanOperator(conf))
         .uid("uid_compact_plan_generate")
         .setParallelism(1) // plan generate must be singleton
         .keyBy(event -> event.getOperation().hashCode())

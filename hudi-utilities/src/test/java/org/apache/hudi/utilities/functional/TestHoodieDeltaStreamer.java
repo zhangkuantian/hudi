@@ -236,6 +236,13 @@ public class TestHoodieDeltaStreamer extends UtilitiesTestBase {
     prepareParquetDFSFiles(PARQUET_NUM_RECORDS, PARQUET_SOURCE_ROOT);
   }
 
+  @AfterAll
+  public static void release() {
+    if (testUtils != null) {
+      testUtils.teardown();
+    }
+  }
+
   private static void populateInvalidTableConfigFilePathProps(TypedProperties props) {
     props.setProperty("hoodie.datasource.write.keygenerator.class", TestHoodieDeltaStreamer.TestGenerator.class.getName());
     props.setProperty("hoodie.deltastreamer.keygen.timebased.output.dateformat", "yyyyMMdd");
@@ -260,7 +267,7 @@ public class TestHoodieDeltaStreamer extends UtilitiesTestBase {
   protected static void populateCommonKafkaProps(TypedProperties props) {
     //Kafka source properties
     props.setProperty("bootstrap.servers", testUtils.brokerAddress());
-    props.setProperty(Config.KAFKA_AUTO_RESET_OFFSETS, "earliest");
+    props.setProperty(Config.KAFKA_AUTO_OFFSET_RESET, "earliest");
     props.setProperty("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
     props.setProperty("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
     props.setProperty("hoodie.deltastreamer.kafka.source.maxEvents", String.valueOf(5000));
@@ -289,7 +296,7 @@ public class TestHoodieDeltaStreamer extends UtilitiesTestBase {
 
     props.setProperty("include", "base.properties");
     props.setProperty("hoodie.write.concurrency.mode", "optimistic_concurrency_control");
-    props.setProperty("hoodie.failed.writes.cleaner.policy", "LAZY");
+    props.setProperty("hoodie.cleaner.policy.failed.writes", "LAZY");
     props.setProperty("hoodie.write.lock.provider", "org.apache.hudi.client.transaction.lock.ZookeeperBasedLockProvider");
     props.setProperty("hoodie.write.lock.hivemetastore.database", "testdb1");
     props.setProperty("hoodie.write.lock.hivemetastore.table", "table1");
@@ -298,7 +305,7 @@ public class TestHoodieDeltaStreamer extends UtilitiesTestBase {
     props.setProperty("hoodie.write.lock.wait_time_ms", "1200000");
     props.setProperty("hoodie.write.lock.num_retries", "10");
     props.setProperty("hoodie.write.lock.zookeeper.lock_key", "test_table");
-    props.setProperty("hoodie.write.lock.zookeeper.zk_base_path", "/test");
+    props.setProperty("hoodie.write.lock.zookeeper.base_path", "/test");
 
     UtilitiesTestBase.Helpers.savePropsToDFS(props, dfs, dfsBasePath + "/" + propsFileName);
     return props;
@@ -1345,7 +1352,7 @@ public class TestHoodieDeltaStreamer extends UtilitiesTestBase {
     props.setProperty("hoodie.deltastreamer.source.kafka.topic",topicName);
     props.setProperty("hoodie.deltastreamer.schemaprovider.source.schema.file", dfsBasePath + "/source_uber.avsc");
     props.setProperty("hoodie.deltastreamer.schemaprovider.target.schema.file", dfsBasePath + "/target_uber.avsc");
-    props.setProperty(Config.KAFKA_AUTO_RESET_OFFSETS, autoResetValue);
+    props.setProperty(Config.KAFKA_AUTO_OFFSET_RESET, autoResetValue);
 
     UtilitiesTestBase.Helpers.savePropsToDFS(props, dfs, dfsBasePath + "/" + propsFileName);
   }
@@ -1620,6 +1627,13 @@ public class TestHoodieDeltaStreamer extends UtilitiesTestBase {
   public static class TestGenerator extends SimpleKeyGenerator {
 
     public TestGenerator(TypedProperties props) {
+      super(props);
+    }
+  }
+
+  public static class TestTableLevelGenerator extends SimpleKeyGenerator {
+
+    public TestTableLevelGenerator(TypedProperties props) {
       super(props);
     }
   }
