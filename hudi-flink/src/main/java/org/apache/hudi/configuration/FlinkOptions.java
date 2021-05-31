@@ -86,6 +86,13 @@ public class FlinkOptions {
       .defaultValue(1.5D)
       .withDescription("Index state ttl in days, default 1.5 day");
 
+  public static final ConfigOption<Boolean> INDEX_GLOBAL_ENABLED = ConfigOptions
+      .key("index.global.enabled")
+      .booleanType()
+      .defaultValue(false)
+      .withDescription("Whether to update index for the old partition path\n"
+          + "if same key record with different partition path came in, default false");
+
   // ------------------------------------------------------------------------
   //  Read Options
   // ------------------------------------------------------------------------
@@ -298,6 +305,22 @@ public class FlinkOptions {
       .defaultValue(100) // default 100 MB
       .withDescription("Max memory in MB for merge, default 100MB");
 
+  public static final ConfigOption<Boolean> WRITE_EXACTLY_ONCE_ENABLED = ConfigOptions
+      .key("write.exactly_once.enabled")
+      .booleanType()
+      .defaultValue(false) // default at least once
+      .withDescription("Whether write in exactly_once semantics, if true,\n"
+          + "the write task would block flushing after it finishes a checkpoint\n"
+          + "until it receives the checkpoint success event, default false");
+
+  // this is only for internal use
+  public static final ConfigOption<Long> WRITE_COMMIT_ACK_TIMEOUT = ConfigOptions
+      .key("write.commit.ack.timeout")
+      .longType()
+      .defaultValue(-1L) // default at least once
+      .withDescription("Timeout limit for a writer task after it finishes a checkpoint and\n"
+          + "waits for the instant commit success, only for internal use");
+
   // ------------------------------------------------------------------------
   //  Compaction Options
   // ------------------------------------------------------------------------
@@ -415,6 +438,12 @@ public class FlinkOptions {
       .stringType()
       .defaultValue("jdbc:hive2://localhost:10000")
       .withDescription("Jdbc URL for hive sync, default 'jdbc:hive2://localhost:10000'");
+
+  public static final ConfigOption<String> HIVE_SYNC_METASTORE_URIS = ConfigOptions
+      .key("hive_sync.metastore.uris")
+      .stringType()
+      .defaultValue("")
+      .withDescription("Metastore uris for hive sync, default ''");
 
   public static final ConfigOption<String> HIVE_SYNC_PARTITION_FIELDS = ConfigOptions
       .key("hive_sync.partition_fields")

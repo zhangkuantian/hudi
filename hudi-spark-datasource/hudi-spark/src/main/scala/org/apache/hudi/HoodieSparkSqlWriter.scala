@@ -52,6 +52,7 @@ import org.apache.spark.sql.{DataFrame, SQLContext, SaveMode, SparkSession}
 
 import scala.collection.JavaConversions._
 import scala.collection.mutable.ListBuffer
+import org.apache.hudi.common.table.HoodieTableConfig.{DEFAULT_ARCHIVELOG_FOLDER, HOODIE_ARCHIVELOG_FOLDER_PROP_NAME}
 
 private[hudi] object HoodieSparkSqlWriter {
 
@@ -114,7 +115,7 @@ private[hudi] object HoodieSparkSqlWriter {
       // Create the table if not present
       if (!tableExists) {
         val archiveLogFolder = parameters.getOrElse(
-          HoodieTableConfig.HOODIE_ARCHIVELOG_FOLDER_PROP_NAME, "archived")
+          HoodieTableConfig.HOODIE_ARCHIVELOG_FOLDER_PROP_NAME, DEFAULT_ARCHIVELOG_FOLDER)
 
         val partitionColumns = HoodieWriterUtils.getPartitionColumns(keyGenerator)
 
@@ -288,7 +289,7 @@ private[hudi] object HoodieSparkSqlWriter {
 
     if (!tableExists) {
       val archiveLogFolder = parameters.getOrElse(
-        HoodieTableConfig.HOODIE_ARCHIVELOG_FOLDER_PROP_NAME, "archived")
+        HoodieTableConfig.HOODIE_ARCHIVELOG_FOLDER_PROP_NAME, DEFAULT_ARCHIVELOG_FOLDER)
       val partitionColumns = HoodieWriterUtils.getPartitionColumns(parameters)
       HoodieTableMetaClient.withPropertyBuilder()
           .setTableType(HoodieTableType.valueOf(tableType))
@@ -412,6 +413,8 @@ private[hudi] object HoodieSparkSqlWriter {
     hiveSyncConfig.hiveUser = parameters(HIVE_USER_OPT_KEY)
     hiveSyncConfig.hivePass = parameters(HIVE_PASS_OPT_KEY)
     hiveSyncConfig.jdbcUrl = parameters(HIVE_URL_OPT_KEY)
+    hiveSyncConfig.skipROSuffix = parameters.getOrElse(HIVE_SKIP_RO_SUFFIX,
+      DataSourceWriteOptions.DEFAULT_HIVE_SKIP_RO_SUFFIX_VAL).toBoolean
     hiveSyncConfig.partitionFields =
       ListBuffer(parameters(HIVE_PARTITION_FIELDS_OPT_KEY).split(",").map(_.trim).filter(!_.isEmpty).toList: _*)
     hiveSyncConfig.partitionValueExtractorClass = parameters(HIVE_PARTITION_EXTRACTOR_CLASS_OPT_KEY)
@@ -538,9 +541,8 @@ private[hudi] object HoodieSparkSqlWriter {
                                              jsc: JavaSparkContext,
                                              tableInstantInfo: TableInstantInfo
                                              ): (Boolean, common.util.Option[java.lang.String]) = {
-    val errorCount = writeResult.getWriteStatuses.rdd.filter(ws => ws.hasErrors).count()
-    if (errorCount == 0) {
-      log.info("No errors. Proceeding to commit the write.")
+    if(writeResult.getWriteStatuses.rdd.filter(ws => ws.hasErrors).isEmpty()) {
+      log.info("Proceeding to commit the write.")
       val metaMap = parameters.filter(kv =>
         kv._1.startsWith(parameters(COMMIT_METADATA_KEYPREFIX_OPT_KEY)))
       val commitSuccess =
@@ -557,7 +559,7 @@ private[hudi] object HoodieSparkSqlWriter {
       }
 
       val asyncCompactionEnabled = isAsyncCompactionEnabled(client, tableConfig, parameters, jsc.hadoopConfiguration())
-      val compactionInstant : common.util.Option[java.lang.String] =
+      val compactionInstant: common.util.Option[java.lang.String] =
         if (asyncCompactionEnabled) {
           client.scheduleCompaction(common.util.Option.of(new util.HashMap[String, String](mapAsJavaMap(metaMap))))
         } else {
@@ -566,7 +568,7 @@ private[hudi] object HoodieSparkSqlWriter {
 
       log.info(s"Compaction Scheduled is $compactionInstant")
 
-      val metaSyncSuccess =  metaSync(spark, parameters, tableInstantInfo.basePath, schema)
+      val metaSyncSuccess = metaSync(spark, parameters, tableInstantInfo.basePath, schema)
 
       log.info(s"Is Async Compaction Enabled ? $asyncCompactionEnabled")
       if (!asyncCompactionEnabled) {
@@ -574,7 +576,7 @@ private[hudi] object HoodieSparkSqlWriter {
       }
       (commitSuccess && metaSyncSuccess, compactionInstant)
     } else {
-      log.error(s"${tableInstantInfo.operation} failed with $errorCount errors :")
+      log.error(s"${tableInstantInfo.operation} failed with errors")
       if (log.isTraceEnabled) {
         log.trace("Printing out the top 100 errors")
         writeResult.getWriteStatuses.rdd.filter(ws => ws.hasErrors)
