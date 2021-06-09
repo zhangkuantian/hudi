@@ -40,8 +40,6 @@ import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.exception.TableNotFoundException;
-import org.apache.hudi.keygen.KeyGenerator;
-import org.apache.hudi.keygen.SimpleAvroKeyGenerator;
 import org.apache.hudi.schema.FilebasedSchemaProvider;
 import org.apache.hudi.streamer.FlinkStreamerConfig;
 import org.apache.hudi.table.action.compact.CompactionTriggerStrategy;
@@ -139,37 +137,6 @@ public class StreamerUtil {
   }
 
   /**
-   * Create a key generator class via reflection, passing in any configs needed.
-   * <p>
-   * If the class name of key generator is configured through the properties file, i.e., {@code props}, use the corresponding key generator class; otherwise, use the default key generator class
-   * specified in {@code DataSourceWriteOptions}.
-   */
-  public static KeyGenerator createKeyGenerator(TypedProperties props) throws IOException {
-    String keyGeneratorClass = props.getString("hoodie.datasource.write.keygenerator.class",
-        SimpleAvroKeyGenerator.class.getName());
-    try {
-      return (KeyGenerator) ReflectionUtils.loadClass(keyGeneratorClass, props);
-    } catch (Throwable e) {
-      throw new IOException("Could not load key generator class " + keyGeneratorClass, e);
-    }
-  }
-
-  /**
-   * Create a key generator class via reflection, passing in any configs needed.
-   * <p>
-   * If the class name of key generator is configured through the properties file, i.e., {@code props}, use the corresponding key generator class; otherwise, use the default key generator class
-   * specified in {@link FlinkOptions}.
-   */
-  public static KeyGenerator createKeyGenerator(Configuration conf) throws IOException {
-    String keyGeneratorClass = conf.getString(FlinkOptions.KEYGEN_CLASS);
-    try {
-      return (KeyGenerator) ReflectionUtils.loadClass(keyGeneratorClass, flinkConf2TypedProperties(conf));
-    } catch (Throwable e) {
-      throw new IOException("Could not load key generator class " + keyGeneratorClass, e);
-    }
-  }
-
-  /**
    * Create a payload class via reflection, passing in an ordering/precombine value.
    */
   public static HoodieRecordPayload createPayload(String payloadClass, GenericRecord record, Comparable orderingVal)
@@ -195,6 +162,7 @@ public class StreamerUtil {
             .withCompactionConfig(
                 HoodieCompactionConfig.newBuilder()
                     .withPayloadClass(conf.getString(FlinkOptions.PAYLOAD_CLASS))
+                    .withTargetIOPerCompactionInMB(conf.getLong(FlinkOptions.COMPACTION_TARGET_IO))
                     .withInlineCompactionTriggerStrategy(
                         CompactionTriggerStrategy.valueOf(conf.getString(FlinkOptions.COMPACTION_TRIGGER_STRATEGY).toUpperCase(Locale.ROOT)))
                     .withMaxNumDeltaCommitsBeforeCompaction(conf.getInteger(FlinkOptions.COMPACTION_DELTA_COMMITS))
