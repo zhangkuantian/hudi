@@ -24,7 +24,6 @@ import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.sink.CleanFunction;
 import org.apache.hudi.sink.StreamWriteOperatorFactory;
 import org.apache.hudi.sink.bootstrap.BootstrapFunction;
-import org.apache.hudi.sink.bootstrap.BootstrapRecord;
 import org.apache.hudi.sink.compact.CompactFunction;
 import org.apache.hudi.sink.compact.CompactionCommitEvent;
 import org.apache.hudi.sink.compact.CompactionCommitSink;
@@ -39,7 +38,6 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
 import org.apache.flink.streaming.api.operators.ProcessOperator;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.connector.ChangelogMode;
@@ -88,31 +86,28 @@ public class HoodieTableSink implements DynamicTableSink, SupportsPartitioning, 
       }
 
       DataStream<Object> pipeline = hoodieDataStream
-           .transform("index_bootstrap",
-                  TypeInformation.of(BootstrapRecord.class),
-                  new ProcessOperator<>(new BootstrapFunction<>(conf)))
           // Key-by record key, to avoid multiple subtasks write to a bucket at the same time
-          .keyBy(BootstrapRecord::getRecordKey)
+          .keyBy(HoodieRecord::getRecordKey)
           .transform(
               "bucket_assigner",
               TypeInformation.of(HoodieRecord.class),
               new BucketAssignOperator<>(new BucketAssignFunction<>(conf)))
-          .uid("uid_bucket_assigner")
+          .uid("uid_bucket_assigner_" + conf.getString(FlinkOptions.TABLE_NAME))
           // shuffle by fileId(bucket id)
           .keyBy(record -> record.getCurrentLocation().getFileId())
           .transform("hoodie_stream_write", TypeInformation.of(Object.class), operatorFactory)
-          .uid("uid_hoodie_stream_write")
+          .name("uid_hoodie_stream_write")
           .setParallelism(numWriteTasks);
-      if (StreamerUtil.needsScheduleCompaction(conf)) {
+      if (StreamerUtil.needsAsyncCompaction(conf)) {
         return pipeline.transform("compact_plan_generate",
             TypeInformation.of(CompactionPlanEvent.class),
             new CompactionPlanOperator(conf))
-            .uid("uid_compact_plan_generate")
+            .name("uid_compact_plan_generate")
             .setParallelism(1) // plan generate must be singleton
-            .keyBy(event -> event.getOperation().hashCode())
+            .rebalance()
             .transform("compact_task",
                 TypeInformation.of(CompactionCommitEvent.class),
-                new KeyedProcessOperator<>(new CompactFunction(conf)))
+                new ProcessOperator<>(new CompactFunction(conf)))
             .setParallelism(conf.getInteger(FlinkOptions.COMPACTION_TASKS))
             .addSink(new CompactionCommitSink(conf))
             .name("compact_commit")
@@ -120,7 +115,7 @@ public class HoodieTableSink implements DynamicTableSink, SupportsPartitioning, 
       } else {
         return pipeline.addSink(new CleanFunction<>(conf))
             .setParallelism(1)
-            .name("clean_commits").uid("uid_clean_commits");
+            .name("clean_commits");
       }
     };
   }

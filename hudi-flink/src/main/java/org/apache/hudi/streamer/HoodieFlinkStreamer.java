@@ -23,11 +23,11 @@ import org.apache.hudi.configuration.FlinkOptions;
 import org.apache.hudi.sink.CleanFunction;
 import org.apache.hudi.sink.StreamWriteOperatorFactory;
 import org.apache.hudi.sink.bootstrap.BootstrapFunction;
+import org.apache.hudi.sink.compact.CompactFunction;
 import org.apache.hudi.sink.compact.CompactionCommitEvent;
 import org.apache.hudi.sink.compact.CompactionCommitSink;
-import org.apache.hudi.sink.compact.CompactionPlanOperator;
 import org.apache.hudi.sink.compact.CompactionPlanEvent;
-import org.apache.hudi.sink.compact.CompactFunction;
+import org.apache.hudi.sink.compact.CompactionPlanOperator;
 import org.apache.hudi.sink.partitioner.BucketAssignFunction;
 import org.apache.hudi.sink.transform.RowDataToHoodieFunction;
 import org.apache.hudi.util.AvroSchemaConverter;
@@ -81,7 +81,7 @@ public class HoodieFlinkStreamer {
     RowType rowType =
         (RowType) AvroSchemaConverter.convertToDataType(StreamerUtil.getSourceSchema(cfg))
             .getLogicalType();
-    Configuration conf = FlinkOptions.fromStreamerConfig(cfg);
+    Configuration conf = FlinkStreamerConfig.toFlinkConfig(cfg);
     int numWriteTask = conf.getInteger(FlinkOptions.WRITE_TASKS);
     StreamWriteOperatorFactory<HoodieRecord> operatorFactory =
         new StreamWriteOperatorFactory<>(conf);
@@ -117,16 +117,16 @@ public class HoodieFlinkStreamer {
         .transform("hoodie_stream_write", TypeInformation.of(Object.class), operatorFactory)
         .uid("uid_hoodie_stream_write")
         .setParallelism(numWriteTask);
-    if (StreamerUtil.needsScheduleCompaction(conf)) {
+    if (StreamerUtil.needsAsyncCompaction(conf)) {
       pipeline.transform("compact_plan_generate",
               TypeInformation.of(CompactionPlanEvent.class),
               new CompactionPlanOperator(conf))
               .uid("uid_compact_plan_generate")
               .setParallelism(1) // plan generate must be singleton
-              .keyBy(event -> event.getOperation().hashCode())
+              .rebalance()
               .transform("compact_task",
                       TypeInformation.of(CompactionCommitEvent.class),
-                      new KeyedProcessOperator<>(new CompactFunction(conf)))
+                      new ProcessOperator<>(new CompactFunction(conf)))
               .setParallelism(conf.getInteger(FlinkOptions.COMPACTION_TASKS))
               .addSink(new CompactionCommitSink(conf))
               .name("compact_commit")

@@ -333,6 +333,9 @@ object HoodieSparkSqlWriter {
     val schema = AvroConversionUtils.convertStructTypeToAvroSchema(df.schema, structName, nameSpace)
     sparkContext.getConf.registerAvroSchemas(schema)
     log.info(s"Registered avro schema : ${schema.toString(true)}")
+    if (parameters(INSERT_DROP_DUPS_OPT_KEY).toBoolean) {
+      throw new HoodieException("Dropping duplicates with bulk_insert in row writer path is not supported yet")
+    }
     val params = parameters.updated(HoodieWriteConfig.AVRO_SCHEMA, schema.toString)
     val writeConfig = DataSourceUtils.createHoodieConfig(schema.toString, path.get, tblName, mapAsJavaMap(params))
     val hoodieDF = HoodieDatasetBulkInsertHelper.prepareHoodieDatasetForBulkInsert(sqlContext, writeConfig, df, structName, nameSpace)
@@ -434,7 +437,14 @@ object HoodieSparkSqlWriter {
       DataSourceWriteOptions.DEFAULT_HIVE_SYNC_AS_DATA_SOURCE_TABLE).toBoolean
     if (syncAsDtaSourceTable) {
       hiveSyncConfig.tableProperties = parameters.getOrElse(HIVE_TABLE_PROPERTIES, null)
-      hiveSyncConfig.serdeProperties = createSqlTableSerdeProperties(parameters, basePath.toString)
+      val serdePropText = createSqlTableSerdeProperties(parameters, basePath.toString)
+      val serdeProp = ConfigUtils.toMap(serdePropText)
+      serdeProp.put(ConfigUtils.SPARK_QUERY_TYPE_KEY, DataSourceReadOptions.QUERY_TYPE_OPT_KEY)
+      serdeProp.put(ConfigUtils.SPARK_QUERY_AS_RO_KEY, DataSourceReadOptions.QUERY_TYPE_READ_OPTIMIZED_OPT_VAL)
+      serdeProp.put(ConfigUtils.SPARK_QUERY_AS_RT_KEY, DataSourceReadOptions.QUERY_TYPE_SNAPSHOT_OPT_VAL)
+
+      hiveSyncConfig.serdeProperties = ConfigUtils.configToString(serdeProp)
+
     }
     hiveSyncConfig
   }

@@ -344,11 +344,13 @@ public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends H
         }
       }
 
+      keyToNewRecords.clear();
       ((ExternalSpillableMap) keyToNewRecords).close();
       writtenRecordKeys.clear();
 
       if (fileWriter != null) {
         fileWriter.close();
+        fileWriter = null;
       }
 
       long fileSizeInBytes = FSUtils.getFileSize(fs, newFilePath);

@@ -386,8 +386,10 @@ public class HoodieAppendHandle<T extends HoodieRecordPayload, I, K, O> extends 
     try {
       // flush any remaining records to disk
       appendDataAndDeleteBlocks(header);
+      recordItr = null;
       if (writer != null) {
         writer.close();
+        writer = null;
 
         // update final size, once for all log files
         for (WriteStatus status: statuses) {

@@ -90,7 +90,7 @@ public class StreamerUtil {
   }
 
   public static Schema getSourceSchema(FlinkStreamerConfig cfg) {
-    return new FilebasedSchemaProvider(FlinkOptions.fromStreamerConfig(cfg)).getSourceSchema();
+    return new FilebasedSchemaProvider(FlinkStreamerConfig.toFlinkConfig(cfg)).getSourceSchema();
   }
 
   public static Schema getSourceSchema(org.apache.flink.configuration.Configuration conf) {
@@ -150,7 +150,7 @@ public class StreamerUtil {
   }
 
   public static HoodieWriteConfig getHoodieClientConfig(FlinkStreamerConfig conf) {
-    return getHoodieClientConfig(FlinkOptions.fromStreamerConfig(conf));
+    return getHoodieClientConfig(FlinkStreamerConfig.toFlinkConfig(conf));
   }
 
   public static HoodieWriteConfig getHoodieClientConfig(Configuration conf) {
@@ -276,7 +276,7 @@ public class StreamerUtil {
    * Returns whether needs to schedule the async compaction.
    * @param conf The flink configuration.
    */
-  public static boolean needsScheduleCompaction(Configuration conf) {
+  public static boolean needsAsyncCompaction(Configuration conf) {
     return conf.getString(FlinkOptions.TABLE_TYPE)
         .toUpperCase(Locale.ROOT)
         .equals(FlinkOptions.TABLE_TYPE_MERGE_ON_READ)
@@ -301,5 +301,15 @@ public class StreamerUtil {
   public static String instantTimePlus(String oldInstant, long milliseconds) {
     long oldTime = Long.parseLong(oldInstant);
     return String.valueOf(oldTime + milliseconds);
+  }
+
+  /**
+   * Return the median instant time between the given two instant time.
+   */
+  public static String medianInstantTime(String highVal, String lowVal) {
+    long high = Long.parseLong(highVal);
+    long low = Long.parseLong(lowVal);
+    long median = low + (high - low) / 2;
+    return String.valueOf(median);
   }
 }
