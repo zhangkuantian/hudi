@@ -80,9 +80,11 @@ public class HoodieTableSink implements DynamicTableSink, SupportsPartitioning, 
 
       // TODO: This is a very time-consuming operation, will optimization
       if (conf.getBoolean(FlinkOptions.INDEX_BOOTSTRAP_ENABLED)) {
-        hoodieDataStream = hoodieDataStream.transform("index_bootstrap",
-            TypeInformation.of(HoodieRecord.class),
-            new ProcessOperator<>(new BootstrapFunction<>(conf)));
+        hoodieDataStream = hoodieDataStream.rebalance()
+            .transform("index_bootstrap",
+                TypeInformation.of(HoodieRecord.class),
+                new ProcessOperator<>(new BootstrapFunction<>(conf)))
+            .uid("uid_index_bootstrap_" + conf.getString(FlinkOptions.TABLE_NAME));
       }
 
       DataStream<Object> pipeline = hoodieDataStream
@@ -96,13 +98,11 @@ public class HoodieTableSink implements DynamicTableSink, SupportsPartitioning, 
           // shuffle by fileId(bucket id)
           .keyBy(record -> record.getCurrentLocation().getFileId())
           .transform("hoodie_stream_write", TypeInformation.of(Object.class), operatorFactory)
-          .name("uid_hoodie_stream_write")
           .setParallelism(numWriteTasks);
       if (StreamerUtil.needsAsyncCompaction(conf)) {
         return pipeline.transform("compact_plan_generate",
             TypeInformation.of(CompactionPlanEvent.class),
             new CompactionPlanOperator(conf))
-            .name("uid_compact_plan_generate")
             .setParallelism(1) // plan generate must be singleton
             .rebalance()
             .transform("compact_task",

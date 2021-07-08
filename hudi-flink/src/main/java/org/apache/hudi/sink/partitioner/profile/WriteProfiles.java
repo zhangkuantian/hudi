@@ -34,11 +34,13 @@ import org.apache.hadoop.fs.FileSystem;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -119,12 +121,16 @@ public class WriteProfiles {
         }).map(path -> {
           try {
             return fs.getFileStatus(path);
+          } catch (FileNotFoundException fe) {
+            LOG.warn("File {} was deleted by the cleaner, ignore", path);
+            return null;
           } catch (IOException e) {
             LOG.error("Get write status of path: {} error", path);
             throw new HoodieException(e);
           }
         })
         // filter out crushed files
+        .filter(Objects::nonNull)
         .filter(fileStatus -> fileStatus.getLen() > 0)
         .collect(Collectors.toList());
   }
@@ -144,11 +150,14 @@ public class WriteProfiles {
       Path basePath,
       HoodieInstant instant,
       HoodieTimeline timeline) {
-    byte[] data = timeline.getInstantDetails(instant).get();
     try {
+      byte[] data = timeline.getInstantDetails(instant).get();
       return Option.of(HoodieCommitMetadata.fromBytes(data, HoodieCommitMetadata.class));
-    } catch (IOException e) {
+    } catch (FileNotFoundException fe) {
       // make this fail safe.
+      LOG.warn("Instant {} was deleted by the cleaner, ignore", instant.getTimestamp());
+      return Option.empty();
+    } catch (Throwable throwable) {
       LOG.error("Get write metadata for table {} with instant {} and path: {} error",
           tableName, instant.getTimestamp(), basePath);
       return Option.empty();
