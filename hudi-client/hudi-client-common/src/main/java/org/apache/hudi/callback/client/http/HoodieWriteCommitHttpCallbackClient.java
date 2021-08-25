@@ -71,7 +71,7 @@ public class HoodieWriteCommitHttpCallbackClient implements Closeable {
       if (statusCode >= 300) {
         LOG.warn(String.format("Failed to send callback message. Response was %s", response));
       } else {
-        LOG.info(String.format("Sent Callback data %s to %s successfully !", callbackMsg, url));
+        LOG.info(String.format("Sent Callback data to %s successfully !", url));
       }
     } catch (IOException e) {
       LOG.warn("Failed to send callback.", e);
@@ -79,11 +79,11 @@ public class HoodieWriteCommitHttpCallbackClient implements Closeable {
   }
 
   private String getApiKey() {
-    return writeConfig.getString(HoodieWriteCommitCallbackConfig.CALLBACK_HTTP_API_KEY);
+    return writeConfig.getString(HoodieWriteCommitCallbackConfig.CALLBACK_HTTP_API_KEY_VALUE);
   }
 
   private String getUrl() {
-    return writeConfig.getString(HoodieWriteCommitCallbackConfig.CALLBACK_HTTP_URL_PROP);
+    return writeConfig.getString(HoodieWriteCommitCallbackConfig.CALLBACK_HTTP_URL);
   }
 
   private CloseableHttpClient getClient() {
@@ -97,7 +97,7 @@ public class HoodieWriteCommitHttpCallbackClient implements Closeable {
   }
 
   private Integer getHttpTimeoutSeconds() {
-    return writeConfig.getInt(HoodieWriteCommitCallbackConfig.CALLBACK_HTTP_TIMEOUT_SECONDS);
+    return writeConfig.getInt(HoodieWriteCommitCallbackConfig.CALLBACK_HTTP_TIMEOUT_IN_SECONDS);
   }
 
   @Override

@@ -70,8 +70,12 @@ public class HiveSyncConfig implements Serializable {
           + "org.apache.hudi input format.")
   public Boolean usePreApacheInputFormat = false;
 
+  @Deprecated
   @Parameter(names = {"--use-jdbc"}, description = "Hive jdbc connect url")
   public Boolean useJdbc = true;
+
+  @Parameter(names = {"--sync-mode"}, description = "Mode to choose for Hive ops. Valid values are hms, jdbc and hiveql")
+  public String syncMode;
 
   @Parameter(names = {"--auto-create-database"}, description = "Auto create hive database")
   public Boolean autoCreateDatabase = true;
@@ -86,7 +90,7 @@ public class HiveSyncConfig implements Serializable {
   public Boolean useFileListingFromMetadata = HoodieMetadataConfig.DEFAULT_METADATA_ENABLE_FOR_READERS;
 
   @Parameter(names = {"--verify-metadata-file-listing"}, description = "Verify file listing from Hudi's metadata against file system")
-  public Boolean verifyMetadataFileListing = HoodieMetadataConfig.METADATA_VALIDATE_PROP.defaultValue();
+  public Boolean verifyMetadataFileListing = HoodieMetadataConfig.VALIDATE_ENABLE.defaultValue();
 
   @Parameter(names = {"--table-properties"}, description = "Table properties to hive table")
   public String tableProperties;
@@ -110,6 +114,15 @@ public class HiveSyncConfig implements Serializable {
   @Parameter(names = {"--batch-sync-num"}, description = "The number of partitions one batch when synchronous partitions to hive")
   public Integer batchSyncNum = 1000;
 
+  @Parameter(names = {"--spark-datasource"}, description = "Whether sync this table as spark data source table.")
+  public Boolean syncAsSparkDataSourceTable = true;
+
+  @Parameter(names = {"--spark-schema-length-threshold"}, description = "The maximum length allowed in a single cell when storing additional schema information in Hive's metastore.")
+  public int sparkSchemaLengthThreshold = 4000;
+
+  @Parameter(names = {"--with-operation-field"}, description = "Whether to include the '_hoodie_operation' field in the metadata fields")
+  public Boolean withOperationField = false;
+
   // enhance the similar function in child class
   public static HiveSyncConfig copy(HiveSyncConfig cfg) {
     HiveSyncConfig newConfig = new HiveSyncConfig();
@@ -131,6 +144,9 @@ public class HiveSyncConfig implements Serializable {
     newConfig.serdeProperties = cfg.serdeProperties;
     newConfig.createManagedTable = cfg.createManagedTable;
     newConfig.batchSyncNum = cfg.batchSyncNum;
+    newConfig.syncAsSparkDataSourceTable = cfg.syncAsSparkDataSourceTable;
+    newConfig.sparkSchemaLengthThreshold = cfg.sparkSchemaLengthThreshold;
+    newConfig.withOperationField = cfg.withOperationField;
     return newConfig;
   }
 
@@ -160,6 +176,9 @@ public class HiveSyncConfig implements Serializable {
       + ", supportTimestamp=" + supportTimestamp
       + ", decodePartition=" + decodePartition
       + ", createManagedTable=" + createManagedTable
+      + ", syncAsSparkDataSourceTable=" + syncAsSparkDataSourceTable
+      + ", sparkSchemaLengthThreshold=" + sparkSchemaLengthThreshold
+      + ", withOperationField=" + withOperationField
       + '}';
   }
 }

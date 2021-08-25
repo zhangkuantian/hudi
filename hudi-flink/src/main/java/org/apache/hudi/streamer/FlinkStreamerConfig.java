@@ -69,8 +69,8 @@ public class FlinkStreamerConfig extends Configuration {
   @Parameter(names = {"--table-type"}, description = "Type of table. COPY_ON_WRITE (or) MERGE_ON_READ.", required = true)
   public String tableType;
 
-  @Parameter(names = {"--append-only"}, description = "Write data to new parquet in every checkpoint. Only support in COPY_ON_WRITE table.", required = true)
-  public Boolean appendOnly = false;
+  @Parameter(names = {"--insert-dedup"}, description = "Whether to deduplicate for INSERT operation, if disabled, writes the base files directly.", required = true)
+  public Boolean insertDedup = true;
 
   @Parameter(names = {"--props"}, description = "Path to properties file on localfs or dfs, with configurations for "
       + "hoodie client, schema provider, key generator and data source. For hoodie client props, sane defaults are "
@@ -117,6 +117,12 @@ public class FlinkStreamerConfig extends Configuration {
   @Parameter(names = {"--commit-on-errors"}, description = "Commit even when some records failed to be written.")
   public Boolean commitOnErrors = false;
 
+  @Parameter(names = {"--transformer-class"},
+      description = "A subclass or a list of subclasses of org.apache.hudi.sink.transform.Transformer"
+          + ". Allows transforming raw source DataStream to a target DataStream (conforming to target schema) before "
+          + "writing. Default : Not set. Pass a comma-separated list of subclass names to chain the transformations.")
+  public List<String> transformerClassNames = null;
+
   /**
    * Flink checkpoint interval.
    */
@@ -125,6 +131,9 @@ public class FlinkStreamerConfig extends Configuration {
 
   @Parameter(names = {"--help", "-h"}, help = true)
   public Boolean help = false;
+
+  @Parameter(names = {"--index-bootstrap-num"}, description = "Parallelism of tasks that do bucket assign, default is 4.")
+  public Integer indexBootstrapNum = 4;
 
   @Parameter(names = {"--bucket-assign-num"}, description = "Parallelism of tasks that do bucket assign, default is 4.")
   public Integer bucketAssignNum = 4;
@@ -242,6 +251,9 @@ public class FlinkStreamerConfig extends Configuration {
   @Parameter(names = {"--hive-sync-file-format"}, description = "File format for hive sync, default 'PARQUET'")
   public String hiveSyncFileFormat = "PARQUET";
 
+  @Parameter(names = {"--hive-sync-mode"}, description = "Mode to choose for Hive ops. Valid values are hms, jdbc and hiveql, default 'jdbc'")
+  public String hiveSyncMode = "jdbc";
+
   @Parameter(names = {"--hive-sync-username"}, description = "Username for hive sync, default 'hive'")
   public String hiveSyncUsername = "hive";
 
@@ -296,15 +308,10 @@ public class FlinkStreamerConfig extends Configuration {
     conf.setString(FlinkOptions.TABLE_NAME, config.targetTableName);
     // copy_on_write works same as COPY_ON_WRITE
     conf.setString(FlinkOptions.TABLE_TYPE, config.tableType.toUpperCase());
-    conf.setBoolean(FlinkOptions.APPEND_ONLY_ENABLE, config.appendOnly);
-    if (config.appendOnly) {
-      // append only should use insert operation
-      conf.setString(FlinkOptions.OPERATION, WriteOperationType.INSERT.value());
-    } else {
-      conf.setString(FlinkOptions.OPERATION, config.operation.value());
-    }
+    conf.setBoolean(FlinkOptions.INSERT_DEDUP, config.insertDedup);
+    conf.setString(FlinkOptions.OPERATION, config.operation.value());
     conf.setString(FlinkOptions.PRECOMBINE_FIELD, config.sourceOrderingField);
-    conf.setString(FlinkOptions.PAYLOAD_CLASS, config.payloadClassName);
+    conf.setString(FlinkOptions.PAYLOAD_CLASS_NAME, config.payloadClassName);
     conf.setBoolean(FlinkOptions.INSERT_DROP_DUPS, config.filterDupes);
     conf.setInteger(FlinkOptions.RETRY_TIMES, Integer.parseInt(config.instantRetryTimes));
     conf.setLong(FlinkOptions.RETRY_INTERVAL_MS, Long.parseLong(config.instantRetryInterval));
@@ -312,10 +319,11 @@ public class FlinkStreamerConfig extends Configuration {
     conf.setString(FlinkOptions.RECORD_KEY_FIELD, config.recordKeyField);
     conf.setString(FlinkOptions.PARTITION_PATH_FIELD, config.partitionPathField);
     if (!StringUtils.isNullOrEmpty(config.keygenClass)) {
-      conf.setString(FlinkOptions.KEYGEN_CLASS, config.keygenClass);
+      conf.setString(FlinkOptions.KEYGEN_CLASS_NAME, config.keygenClass);
     } else {
       conf.setString(FlinkOptions.KEYGEN_TYPE, config.keygenType);
     }
+    conf.setInteger(FlinkOptions.INDEX_BOOTSTRAP_TASKS, config.indexBootstrapNum);
     conf.setInteger(FlinkOptions.BUCKET_ASSIGN_TASKS, config.bucketAssignNum);
     conf.setInteger(FlinkOptions.WRITE_TASKS, config.writeTaskNum);
     conf.setString(FlinkOptions.PARTITION_DEFAULT_NAME, config.partitionDefaultName);
@@ -348,12 +356,13 @@ public class FlinkStreamerConfig extends Configuration {
     conf.setString(FlinkOptions.HIVE_SYNC_DB, config.hiveSyncDb);
     conf.setString(FlinkOptions.HIVE_SYNC_TABLE, config.hiveSyncTable);
     conf.setString(FlinkOptions.HIVE_SYNC_FILE_FORMAT, config.hiveSyncFileFormat);
+    conf.setString(FlinkOptions.HIVE_SYNC_MODE, config.hiveSyncMode);
     conf.setString(FlinkOptions.HIVE_SYNC_USERNAME, config.hiveSyncUsername);
     conf.setString(FlinkOptions.HIVE_SYNC_PASSWORD, config.hiveSyncPassword);
     conf.setString(FlinkOptions.HIVE_SYNC_JDBC_URL, config.hiveSyncJdbcUrl);
     conf.setString(FlinkOptions.HIVE_SYNC_METASTORE_URIS, config.hiveSyncMetastoreUri);
     conf.setString(FlinkOptions.HIVE_SYNC_PARTITION_FIELDS, config.hiveSyncPartitionFields);
-    conf.setString(FlinkOptions.HIVE_SYNC_PARTITION_EXTRACTOR_CLASS, config.hiveSyncPartitionExtractorClass);
+    conf.setString(FlinkOptions.HIVE_SYNC_PARTITION_EXTRACTOR_CLASS_NAME, config.hiveSyncPartitionExtractorClass);
     conf.setBoolean(FlinkOptions.HIVE_SYNC_ASSUME_DATE_PARTITION, config.hiveSyncAssumeDatePartition);
     conf.setBoolean(FlinkOptions.HIVE_SYNC_USE_JDBC, config.hiveSyncUseJdbc);
     conf.setBoolean(FlinkOptions.HIVE_SYNC_AUTO_CREATE_DB, config.hiveSyncAutoCreateDb);

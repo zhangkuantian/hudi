@@ -18,12 +18,6 @@
 
 package org.apache.hudi;
 
-import static org.apache.spark.sql.functions.callUDF;
-
-import java.util.Arrays;
-import java.util.List;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.util.ReflectionUtils;
@@ -41,7 +35,16 @@ import org.apache.spark.sql.api.java.UDF1;
 import org.apache.spark.sql.functions;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructType;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import scala.collection.JavaConverters;
+
+import static org.apache.spark.sql.functions.callUDF;
 
 /**
  * Helper class to assist in preparing {@link Dataset<Row>}s for bulk insert with datasource implementation.
@@ -68,13 +71,13 @@ public class HoodieDatasetBulkInsertHelper {
   public static Dataset<Row> prepareHoodieDatasetForBulkInsert(SQLContext sqlContext,
       HoodieWriteConfig config, Dataset<Row> rows, String structName, String recordNamespace,
                                                                BulkInsertPartitioner<Dataset<Row>> bulkInsertPartitionerRows,
-                                                               boolean isGlobalIndex) {
+                                                               boolean isGlobalIndex, boolean dropPartitionColumns) {
     List<Column> originalFields =
         Arrays.stream(rows.schema().fields()).map(f -> new Column(f.name())).collect(Collectors.toList());
 
     TypedProperties properties = new TypedProperties();
     properties.putAll(config.getProps());
-    String keyGeneratorClass = properties.getString(DataSourceWriteOptions.KEYGENERATOR_CLASS_OPT_KEY().key());
+    String keyGeneratorClass = properties.getString(DataSourceWriteOptions.KEYGENERATOR_CLASS_NAME().key());
     BuiltinKeyGenerator keyGenerator = (BuiltinKeyGenerator) ReflectionUtils.loadClass(keyGeneratorClass, properties);
     StructType structTypeForUDF = rows.schema();
 
@@ -100,9 +103,17 @@ public class HoodieDatasetBulkInsertHelper {
             .withColumn(HoodieRecord.FILENAME_METADATA_FIELD,
                 functions.lit("").cast(DataTypes.StringType));
 
-    Dataset<Row> dedupedDf = rowDatasetWithHoodieColumns;
+    Dataset<Row> processedDf = rowDatasetWithHoodieColumns;
+    if (dropPartitionColumns) {
+      String partitionColumns = String.join(",", keyGenerator.getPartitionPathFields());
+      for (String partitionField: keyGenerator.getPartitionPathFields()) {
+        originalFields.remove(new Column(partitionField));
+      }
+      processedDf = rowDatasetWithHoodieColumns.drop(partitionColumns);
+    }
+    Dataset<Row> dedupedDf = processedDf;
     if (config.shouldCombineBeforeInsert()) {
-      dedupedDf = SparkRowWriteHelper.newInstance().deduplicateRows(rowDatasetWithHoodieColumns, config.getPreCombineField(), isGlobalIndex);
+      dedupedDf = SparkRowWriteHelper.newInstance().deduplicateRows(processedDf, config.getPreCombineField(), isGlobalIndex);
     }
 
     List<Column> orderedFields = Stream.concat(HoodieRecord.HOODIE_META_COLUMNS.stream().map(Column::new),
@@ -112,4 +123,44 @@ public class HoodieDatasetBulkInsertHelper {
 
     return bulkInsertPartitionerRows.repartitionRecords(colOrderedDataset, config.getBulkInsertShuffleParallelism());
   }
+
+  /**
+   * Add empty meta fields and reorder such that meta fields are at the beginning.
+   *
+   * @param rows
+   * @return
+   */
+  public static Dataset<Row> prepareHoodieDatasetForBulkInsertWithoutMetaFields(Dataset<Row> rows) {
+    // add empty meta cols.
+    Dataset<Row> rowsWithMetaCols = rows
+        .withColumn(HoodieRecord.COMMIT_TIME_METADATA_FIELD,
+            functions.lit("").cast(DataTypes.StringType))
+        .withColumn(HoodieRecord.COMMIT_SEQNO_METADATA_FIELD,
+            functions.lit("").cast(DataTypes.StringType))
+        .withColumn(HoodieRecord.RECORD_KEY_METADATA_FIELD,
+            functions.lit("").cast(DataTypes.StringType))
+        .withColumn(HoodieRecord.PARTITION_PATH_METADATA_FIELD,
+            functions.lit("").cast(DataTypes.StringType))
+        .withColumn(HoodieRecord.FILENAME_METADATA_FIELD,
+            functions.lit("").cast(DataTypes.StringType));
+
+    List<Column> originalFields =
+        Arrays.stream(rowsWithMetaCols.schema().fields())
+            .filter(field -> !HoodieRecord.HOODIE_META_COLUMNS_WITH_OPERATION.contains(field.name()))
+            .map(f -> new Column(f.name())).collect(Collectors.toList());
+
+    List<Column> metaFields =
+        Arrays.stream(rowsWithMetaCols.schema().fields())
+            .filter(field -> HoodieRecord.HOODIE_META_COLUMNS_WITH_OPERATION.contains(field.name()))
+            .map(f -> new Column(f.name())).collect(Collectors.toList());
+
+    // reorder such that all meta columns are at the beginning followed by original columns
+    List<Column> allCols = new ArrayList<>();
+    allCols.addAll(metaFields);
+    allCols.addAll(originalFields);
+
+    return rowsWithMetaCols.select(
+        JavaConverters.collectionAsScalaIterableConverter(allCols).asScala().toSeq());
+  }
+
 }

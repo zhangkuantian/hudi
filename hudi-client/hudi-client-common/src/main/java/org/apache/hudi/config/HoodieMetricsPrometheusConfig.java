@@ -18,6 +18,8 @@
 
 package org.apache.hudi.config;
 
+import org.apache.hudi.common.config.ConfigClassProperty;
+import org.apache.hudi.common.config.ConfigGroups;
 import org.apache.hudi.common.config.ConfigProperty;
 import org.apache.hudi.common.config.HoodieConfig;
 
@@ -25,42 +27,46 @@ import java.util.Properties;
 
 import static org.apache.hudi.config.HoodieMetricsConfig.METRIC_PREFIX;
 
+@ConfigClassProperty(name = "Metrics Configurations for Prometheus",
+    groupName = ConfigGroups.Names.METRICS,
+    description = "Enables reporting on Hudi metrics using Prometheus. "
+        + " Hudi publishes metrics on every commit, clean, rollback etc.")
 public class HoodieMetricsPrometheusConfig extends HoodieConfig {
 
   // Prometheus PushGateWay
   public static final String PUSHGATEWAY_PREFIX = METRIC_PREFIX + ".pushgateway";
 
-  public static final ConfigProperty<String> PUSHGATEWAY_HOST = ConfigProperty
+  public static final ConfigProperty<String> PUSHGATEWAY_HOST_NAME = ConfigProperty
       .key(PUSHGATEWAY_PREFIX + ".host")
       .defaultValue("localhost")
       .sinceVersion("0.6.0")
-      .withDocumentation("");
+      .withDocumentation("Hostname of the prometheus push gateway");
 
-  public static final ConfigProperty<Integer> PUSHGATEWAY_PORT = ConfigProperty
+  public static final ConfigProperty<Integer> PUSHGATEWAY_PORT_NUM = ConfigProperty
       .key(PUSHGATEWAY_PREFIX + ".port")
       .defaultValue(9091)
       .sinceVersion("0.6.0")
-      .withDocumentation("");
+      .withDocumentation("Port for the push gateway.");
 
-  public static final ConfigProperty<Integer> PUSHGATEWAY_REPORT_PERIOD_SECONDS = ConfigProperty
+  public static final ConfigProperty<Integer> PUSHGATEWAY_REPORT_PERIOD_IN_SECONDS = ConfigProperty
       .key(PUSHGATEWAY_PREFIX + ".report.period.seconds")
       .defaultValue(30)
       .sinceVersion("0.6.0")
-      .withDocumentation("");
+      .withDocumentation("Reporting interval in seconds.");
 
-  public static final ConfigProperty<Boolean> PUSHGATEWAY_DELETE_ON_SHUTDOWN = ConfigProperty
+  public static final ConfigProperty<Boolean> PUSHGATEWAY_DELETE_ON_SHUTDOWN_ENABLE = ConfigProperty
       .key(PUSHGATEWAY_PREFIX + ".delete.on.shutdown")
       .defaultValue(true)
       .sinceVersion("0.6.0")
       .withDocumentation("");
 
-  public static final ConfigProperty<String> PUSHGATEWAY_JOB_NAME = ConfigProperty
+  public static final ConfigProperty<String> PUSHGATEWAY_JOBNAME = ConfigProperty
       .key(PUSHGATEWAY_PREFIX + ".job.name")
       .defaultValue("")
       .sinceVersion("0.6.0")
-      .withDocumentation("");
+      .withDocumentation("Name of the push gateway job.");
 
-  public static final ConfigProperty<Boolean> PUSHGATEWAY_RANDOM_JOB_NAME_SUFFIX = ConfigProperty
+  public static final ConfigProperty<Boolean> PUSHGATEWAY_RANDOM_JOBNAME_SUFFIX = ConfigProperty
       .key(PUSHGATEWAY_PREFIX + ".random.job.name.suffix")
       .defaultValue(true)
       .sinceVersion("0.6.0")
@@ -69,11 +75,82 @@ public class HoodieMetricsPrometheusConfig extends HoodieConfig {
   // Prometheus HttpServer
   public static final String PROMETHEUS_PREFIX = METRIC_PREFIX + ".prometheus";
 
-  public static final ConfigProperty<Integer> PROMETHEUS_PORT = ConfigProperty
+  public static final ConfigProperty<Integer> PROMETHEUS_PORT_NUM = ConfigProperty
       .key(PROMETHEUS_PREFIX + ".port")
       .defaultValue(9090)
       .sinceVersion("0.6.0")
-      .withDocumentation("");
+      .withDocumentation("Port for prometheus server.");
+
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_HOST_NAME} and its methods instead
+   */
+  @Deprecated
+  public static final String PUSHGATEWAY_HOST = PUSHGATEWAY_HOST_NAME.key();
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_HOST_NAME} and its methods instead
+   */
+  @Deprecated
+  public static final String DEFAULT_PUSHGATEWAY_HOST = PUSHGATEWAY_HOST_NAME.defaultValue();
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_PORT_NUM} and its methods instead
+   */
+  @Deprecated
+  public static final String PUSHGATEWAY_PORT = PUSHGATEWAY_PORT_NUM.key();
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_PORT_NUM} and its methods instead
+   */
+  @Deprecated
+  public static final int DEFAULT_PUSHGATEWAY_PORT = PUSHGATEWAY_PORT_NUM.defaultValue();
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_REPORT_PERIOD_IN_SECONDS} and its methods instead
+   */
+  @Deprecated
+  public static final String PUSHGATEWAY_REPORT_PERIOD_SECONDS = PUSHGATEWAY_REPORT_PERIOD_IN_SECONDS.key();
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_REPORT_PERIOD_IN_SECONDS} and its methods instead
+   */
+  @Deprecated
+  public static final int DEFAULT_PUSHGATEWAY_REPORT_PERIOD_SECONDS = PUSHGATEWAY_REPORT_PERIOD_IN_SECONDS.defaultValue();
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_DELETE_ON_SHUTDOWN_ENABLE} and its methods instead
+   */
+  @Deprecated
+  public static final String PUSHGATEWAY_DELETE_ON_SHUTDOWN = PUSHGATEWAY_DELETE_ON_SHUTDOWN_ENABLE.key();
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_DELETE_ON_SHUTDOWN_ENABLE} and its methods instead
+   */
+  @Deprecated
+  public static final boolean DEFAULT_PUSHGATEWAY_DELETE_ON_SHUTDOWN = PUSHGATEWAY_DELETE_ON_SHUTDOWN_ENABLE.defaultValue();
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_JOBNAME} and its methods instead
+   */
+  @Deprecated
+  public static final String PUSHGATEWAY_JOB_NAME = PUSHGATEWAY_JOBNAME.key();
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_JOBNAME} and its methods instead
+   */
+  @Deprecated
+  public static final String DEFAULT_PUSHGATEWAY_JOB_NAME = PUSHGATEWAY_JOBNAME.defaultValue();
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_RANDOM_JOBNAME_SUFFIX} and its methods instead
+   */
+  @Deprecated
+  public static final String PUSHGATEWAY_RANDOM_JOB_NAME_SUFFIX = PUSHGATEWAY_RANDOM_JOBNAME_SUFFIX.key();
+  /**
+   * @deprecated Use {@link #PUSHGATEWAY_RANDOM_JOBNAME_SUFFIX} and its methods instead
+   */
+  @Deprecated
+  public static final boolean DEFAULT_PUSHGATEWAY_RANDOM_JOB_NAME_SUFFIX = PUSHGATEWAY_RANDOM_JOBNAME_SUFFIX.defaultValue();
+  /**
+   * @deprecated Use {@link #PROMETHEUS_PORT_NUM} and its methods instead
+   */
+  @Deprecated
+  public static final String PROMETHEUS_PORT = PROMETHEUS_PORT_NUM.key();
+  /**
+   * @deprecated Use {@link #PROMETHEUS_PORT_NUM} and its methods instead
+   */
+  @Deprecated
+  public static final int DEFAULT_PROMETHEUS_PORT = PROMETHEUS_PORT_NUM.defaultValue();
 
   private HoodieMetricsPrometheusConfig() {
     super();

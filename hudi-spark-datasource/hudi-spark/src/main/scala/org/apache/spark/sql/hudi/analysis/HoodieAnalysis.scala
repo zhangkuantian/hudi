@@ -17,23 +17,25 @@
 
 package org.apache.spark.sql.hudi.analysis
 
+import org.apache.hudi.DataSourceWriteOptions.MOR_TABLE_TYPE_OPT_VAL
 import org.apache.hudi.SparkAdapterSupport
 
 import scala.collection.JavaConverters._
 import org.apache.hudi.common.model.HoodieRecord
+import org.apache.hudi.common.table.HoodieTableMetaClient
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedStar
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Alias, Expression, Literal, NamedExpression}
 import org.apache.spark.sql.catalyst.plans.Inner
-import org.apache.spark.sql.catalyst.plans.logical.{Assignment, DeleteAction, DeleteFromTable, InsertAction, LogicalPlan, MergeIntoTable, Project, UpdateAction, UpdateTable}
+import org.apache.spark.sql.catalyst.plans.logical.{Assignment, CompactionPath, CompactionShowOnPath, CompactionShowOnTable, CompactionTable, DeleteAction, DeleteFromTable, InsertAction, LogicalPlan, MergeIntoTable, Project, UpdateAction, UpdateTable}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.command.{AlterTableAddColumnsCommand, AlterTableChangeColumnCommand, AlterTableRenameCommand, CreateDataSourceTableCommand, TruncateTableCommand}
 import org.apache.spark.sql.execution.datasources.{CreateTable, LogicalRelation}
-import org.apache.spark.sql.hudi.HoodieSqlUtils
+import org.apache.spark.sql.hudi.{HoodieOptionConfig, HoodieSqlUtils}
 import org.apache.spark.sql.hudi.HoodieSqlUtils._
-import org.apache.spark.sql.hudi.command.{AlterHoodieTableAddColumnsCommand, AlterHoodieTableChangeColumnCommand, AlterHoodieTableRenameCommand, CreateHoodieTableAsSelectCommand, CreateHoodieTableCommand, DeleteHoodieTableCommand, InsertIntoHoodieTableCommand, MergeIntoHoodieTableCommand, TruncateHoodieTableCommand, UpdateHoodieTableCommand}
+import org.apache.spark.sql.hudi.command.{AlterHoodieTableAddColumnsCommand, AlterHoodieTableChangeColumnCommand, AlterHoodieTableRenameCommand, CompactionHoodiePathCommand, CompactionHoodieTableCommand, CompactionShowHoodiePathCommand, CompactionShowHoodieTableCommand, CreateHoodieTableAsSelectCommand, CreateHoodieTableCommand, DeleteHoodieTableCommand, InsertIntoHoodieTableCommand, MergeIntoHoodieTableCommand, TruncateHoodieTableCommand, UpdateHoodieTableCommand}
 import org.apache.spark.sql.types.StringType
 
 object HoodieAnalysis {
@@ -87,6 +89,24 @@ case class HoodieAnalysis(sparkSession: SparkSession) extends Rule[LogicalPlan]
         if query.resolved && isHoodieTable(table) =>
           CreateHoodieTableAsSelectCommand(table, mode, query)
 
+      // Convert to CompactionHoodieTableCommand
+      case CompactionTable(table, operation, options)
+        if table.resolved && isHoodieTable(table, sparkSession) =>
+        val tableId = getTableIdentify(table)
+        val catalogTable = sparkSession.sessionState.catalog.getTableMetadata(tableId)
+        CompactionHoodieTableCommand(catalogTable, operation, options)
+      // Convert to CompactionHoodiePathCommand
+      case CompactionPath(path, operation, options) =>
+        CompactionHoodiePathCommand(path, operation, options)
+      // Convert to CompactionShowOnTable
+      case CompactionShowOnTable(table, limit)
+        if isHoodieTable(table, sparkSession) =>
+        val tableId = getTableIdentify(table)
+        val catalogTable = sparkSession.sessionState.catalog.getTableMetadata(tableId)
+        CompactionShowHoodieTableCommand(catalogTable, limit)
+      // Convert to CompactionShowHoodiePathCommand
+      case CompactionShowOnPath(path, limit) =>
+        CompactionShowHoodiePathCommand(path, limit)
       case _=> plan
     }
   }
@@ -102,7 +122,7 @@ case class HoodieResolveReferences(sparkSession: SparkSession) extends Rule[Logi
 
   def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperatorsUp  {
     // Resolve merge into
-    case MergeIntoTable(target, source, mergeCondition, matchedActions, notMatchedActions)
+    case mergeInto @ MergeIntoTable(target, source, mergeCondition, matchedActions, notMatchedActions)
       if isHoodieTable(target, sparkSession) && target.resolved =>
 
       val resolvedSource = analyzer.execute(source)
@@ -141,11 +161,25 @@ case class HoodieResolveReferences(sparkSession: SparkSession) extends Rule[Logi
         val resolvedCondition = condition.map(resolveExpressionFrom(resolvedSource)(_))
         val resolvedAssignments = if (isInsertOrUpdateStar(assignments)) {
           // assignments is empty means insert * or update set *
-          // we fill assign all the source fields to the target fields
-          target.output
-            .filter(attr => !HoodieSqlUtils.isMetaField(attr.name))
-            .zip(resolvedSource.output.filter(attr => !HoodieSqlUtils.isMetaField(attr.name)))
-            .map { case (targetAttr, sourceAttr) => Assignment(targetAttr, sourceAttr) }
+          val resolvedSourceOutputWithoutMetaFields = resolvedSource.output.filter(attr => !HoodieSqlUtils.isMetaField(attr.name))
+          val targetOutputWithoutMetaFields = target.output.filter(attr => !HoodieSqlUtils.isMetaField(attr.name))
+          val resolvedSourceColumnNamesWithoutMetaFields = resolvedSourceOutputWithoutMetaFields.map(_.name)
+          val targetColumnNamesWithoutMetaFields = targetOutputWithoutMetaFields.map(_.name)
+
+          if(targetColumnNamesWithoutMetaFields.toSet.subsetOf(resolvedSourceColumnNamesWithoutMetaFields.toSet)){
+            //If sourceTable's columns contains all targetTable's columns,
+            //We fill assign all the source fields to the target fields by column name matching.
+            val sourceColNameAttrMap = resolvedSourceOutputWithoutMetaFields.map(attr => (attr.name, attr)).toMap
+            targetOutputWithoutMetaFields.map(targetAttr => {
+              val sourceAttr = sourceColNameAttrMap(targetAttr.name)
+              Assignment(targetAttr, sourceAttr)
+            })
+          } else {
+            // We fill assign all the source fields to the target fields by order.
+            targetOutputWithoutMetaFields
+              .zip(resolvedSourceOutputWithoutMetaFields)
+              .map { case (targetAttr, sourceAttr) => Assignment(targetAttr, sourceAttr) }
+          }
         } else {
           assignments.map(assignment => {
             val resolvedKey = resolveExpressionFrom(target)(assignment.key)
@@ -164,7 +198,47 @@ case class HoodieResolveReferences(sparkSession: SparkSession) extends Rule[Logi
         case UpdateAction(condition, assignments) =>
           val (resolvedCondition, resolvedAssignments) =
             resolveConditionAssignments(condition, assignments)
-          UpdateAction(resolvedCondition, resolvedAssignments)
+
+          // Get the target table type and pre-combine field.
+          val targetTableId = getMergeIntoTargetTableId(mergeInto)
+          val targetTable =
+            sparkSession.sessionState.catalog.getTableMetadata(targetTableId)
+          val targetTableType = HoodieOptionConfig.getTableType(targetTable.storage.properties)
+          val preCombineField = HoodieOptionConfig.getPreCombineField(targetTable.storage.properties)
+
+          // Get the map of target attribute to value of the update assignments.
+          val target2Values = resolvedAssignments.map {
+              case Assignment(attr: AttributeReference, value) =>
+                attr.name -> value
+              case o => throw new IllegalArgumentException(s"Assignment key must be an attribute, current is: ${o.key}")
+          }.toMap
+
+          // Validate if there are incorrect target attributes.
+          val unKnowTargets = target2Values.keys
+            .filterNot(removeMetaFields(target.output).map(_.name).contains(_))
+          if (unKnowTargets.nonEmpty) {
+            throw new AnalysisException(s"Cannot find target attributes: ${unKnowTargets.mkString(",")}.")
+          }
+
+          // Fill the missing target attribute in the update action for COW table to support partial update.
+          // e.g. If the update action missing 'id' attribute, we fill a "id = target.id" to the update action.
+          val newAssignments = removeMetaFields(target.output)
+            .map(attr => {
+              // TODO support partial update for MOR.
+              if (!target2Values.contains(attr.name) && targetTableType == MOR_TABLE_TYPE_OPT_VAL) {
+                throw new AnalysisException(s"Missing specify the value for target field: '${attr.name}' in merge into update action" +
+                  s" for MOR table. Currently we cannot support partial update for MOR," +
+                  s" please complete all the target fields just like '...update set id = s0.id, name = s0.name ....'")
+              }
+              if (preCombineField.isDefined && preCombineField.get.equalsIgnoreCase(attr.name)
+                  && !target2Values.contains(attr.name)) {
+                throw new AnalysisException(s"Missing specify value for the preCombineField:" +
+                  s" ${preCombineField.get} in merge-into update action. You should add" +
+                  s" '... update set ${preCombineField.get} = xx....' to the when-matched clause.")
+              }
+              Assignment(attr, target2Values.getOrElse(attr.name, attr))
+            })
+          UpdateAction(resolvedCondition, newAssignments)
         case DeleteAction(condition) =>
           val resolvedCondition = condition.map(resolveExpressionFrom(resolvedSource)(_))
           DeleteAction(resolvedCondition)
@@ -227,7 +301,30 @@ case class HoodieResolveReferences(sparkSession: SparkSession) extends Rule[Logi
       } else {
         l
       }
-
+    // Fill schema for Create Table without specify schema info
+    case c @ CreateTable(tableDesc, _, _)
+      if isHoodieTable(tableDesc) =>
+        val tablePath = getTableLocation(c.tableDesc, sparkSession)
+        val tableExistInCatalog = sparkSession.sessionState.catalog.tableExists(tableDesc.identifier)
+        // Only when the table has not exist in catalog, we need to fill the schema info for creating table.
+        if (!tableExistInCatalog && tableExistsInPath(tablePath, sparkSession.sessionState.newHadoopConf())) {
+          val metaClient = HoodieTableMetaClient.builder()
+            .setBasePath(tablePath)
+            .setConf(sparkSession.sessionState.newHadoopConf())
+            .build()
+          val tableSchema = HoodieSqlUtils.getTableSqlSchema(metaClient)
+          if (tableSchema.isDefined && tableDesc.schema.isEmpty) {
+            // Fill the schema with the schema from the table
+            c.copy(tableDesc.copy(schema = tableSchema.get))
+          } else if (tableSchema.isDefined && tableDesc.schema != tableSchema.get) {
+            throw new AnalysisException(s"Specified schema in create table statement is not equal to the table schema." +
+              s"You should not specify the schema for an exist table: ${tableDesc.identifier} ")
+          } else {
+            c
+          }
+        } else {
+          c
+        }
     case p => p
   }
 
