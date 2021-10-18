@@ -26,9 +26,9 @@ import org.apache.hudi.common.model.HoodieLogFile;
 import org.apache.hudi.common.model.HoodiePartitionMetadata;
 import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
-import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.view.FileSystemViewStorageConfig;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.collection.ImmutablePair;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
@@ -49,8 +49,10 @@ import org.apache.log4j.Logger;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -59,6 +61,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -163,6 +166,9 @@ public class FSUtils {
   }
 
   public static String getCommitTime(String fullFileName) {
+    if (isLogFile(new Path(fullFileName))) {
+      return fullFileName.split("_")[1].split("\\.")[0];
+    }
     return fullFileName.split("_")[2].split("\\.")[0];
   }
 
@@ -264,11 +270,10 @@ public class FSUtils {
   }
 
   public static List<String> getAllPartitionPaths(HoodieEngineContext engineContext, String basePathStr,
-                                                  boolean useFileListingFromMetadata, boolean verifyListings,
+                                                  boolean useFileListingFromMetadata,
                                                   boolean assumeDatePartitioning) {
     HoodieMetadataConfig metadataConfig = HoodieMetadataConfig.newBuilder()
         .enable(useFileListingFromMetadata)
-        .validate(verifyListings)
         .withAssumeDatePartitioning(assumeDatePartitioning)
         .build();
     try (HoodieTableMetadata tableMetadata = HoodieTableMetadata.create(engineContext, metadataConfig, basePathStr,
@@ -530,15 +535,6 @@ public class FSUtils {
     return recovered;
   }
 
-  public static void deleteInstantFile(FileSystem fs, String metaPath, HoodieInstant instant) {
-    try {
-      LOG.warn("try to delete instant file: " + instant);
-      fs.delete(new Path(metaPath, instant.getFileName()), false);
-    } catch (IOException e) {
-      throw new HoodieIOException("Could not delete instant file" + instant.getFileName(), e);
-    }
-  }
-
   public static void createPathIfNotExists(FileSystem fs, Path partitionPath) throws IOException {
     if (!fs.exists(partitionPath)) {
       fs.mkdirs(partitionPath);
@@ -611,5 +607,88 @@ public class FSUtils {
     return Arrays.stream(statuses)
         .filter(fileStatus -> !fileStatus.getPath().toString().contains(HoodieTableMetaClient.METAFOLDER_NAME))
         .collect(Collectors.toList());
+  }
+
+  /**
+   * Deletes a directory by deleting sub-paths in parallel on the file system.
+   *
+   * @param hoodieEngineContext {@code HoodieEngineContext} instance
+   * @param fs file system
+   * @param dirPath directory path
+   * @param parallelism parallelism to use for sub-paths
+   * @return {@code true} if the directory is delete; {@code false} otherwise.
+   */
+  public static boolean deleteDir(
+      HoodieEngineContext hoodieEngineContext, FileSystem fs, Path dirPath, int parallelism) {
+    try {
+      if (fs.exists(dirPath)) {
+        FSUtils.parallelizeSubPathProcess(hoodieEngineContext, fs, dirPath, parallelism, e -> true,
+            pairOfSubPathAndConf -> deleteSubPath(
+                pairOfSubPathAndConf.getKey(), pairOfSubPathAndConf.getValue(), true)
+        );
+        boolean result = fs.delete(dirPath, false);
+        LOG.info("Removed directory at " + dirPath);
+        return result;
+      }
+    } catch (IOException ioe) {
+      throw new HoodieIOException(ioe.getMessage(), ioe);
+    }
+    return false;
+  }
+
+  /**
+   * Processes sub-path in parallel.
+   *
+   * @param hoodieEngineContext {@code HoodieEngineContext} instance
+   * @param fs file system
+   * @param dirPath directory path
+   * @param parallelism parallelism to use for sub-paths
+   * @param subPathPredicate predicate to use to filter sub-paths for processing
+   * @param pairFunction actual processing logic for each sub-path
+   * @param <T> type of result to return for each sub-path
+   * @return a map of sub-path to result of the processing
+   */
+  public static <T> Map<String, T> parallelizeSubPathProcess(
+      HoodieEngineContext hoodieEngineContext, FileSystem fs, Path dirPath, int parallelism,
+      Predicate<FileStatus> subPathPredicate, SerializableFunction<Pair<String, SerializableConfiguration>, T> pairFunction) {
+    Map<String, T> result = new HashMap<>();
+    try {
+      FileStatus[] fileStatuses = fs.listStatus(dirPath);
+      List<String> subPaths = Arrays.stream(fileStatuses)
+          .filter(subPathPredicate)
+          .map(fileStatus -> fileStatus.getPath().toString())
+          .collect(Collectors.toList());
+      if (subPaths.size() > 0) {
+        SerializableConfiguration conf = new SerializableConfiguration(fs.getConf());
+        int actualParallelism = Math.min(subPaths.size(), parallelism);
+        result = hoodieEngineContext.mapToPair(subPaths,
+            subPath -> new ImmutablePair<>(subPath, pairFunction.apply(new ImmutablePair<>(subPath, conf))),
+            actualParallelism);
+      }
+    } catch (IOException ioe) {
+      throw new HoodieIOException(ioe.getMessage(), ioe);
+    }
+    return result;
+  }
+
+  /**
+   * Deletes a sub-path.
+   *
+   * @param subPathStr sub-path String
+   * @param conf       serializable config
+   * @param recursive  is recursive or not
+   * @return {@code true} if the sub-path is deleted; {@code false} otherwise.
+   */
+  public static boolean deleteSubPath(String subPathStr, SerializableConfiguration conf, boolean recursive) {
+    try {
+      Path subPath = new Path(subPathStr);
+      FileSystem fileSystem = subPath.getFileSystem(conf.get());
+      return fileSystem.delete(subPath, recursive);
+    } catch (IOException e) {
+      throw new HoodieIOException(e.getMessage(), e);
+    }
+  }
+
+  public interface SerializableFunction<T, R> extends Function<T, R>, Serializable {
   }
 }

@@ -22,8 +22,9 @@ import org.apache.hudi.avro.model.HoodieCompactionPlan;
 import org.apache.hudi.cli.HoodieCLI;
 import org.apache.hudi.cli.HoodiePrintHelper;
 import org.apache.hudi.cli.TableHeader;
-import org.apache.hudi.cli.testutils.AbstractShellIntegrationTest;
+import org.apache.hudi.cli.functional.CLIFunctionalTestHarness;
 import org.apache.hudi.cli.testutils.HoodieTestCommitMetadataGenerator;
+import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.model.HoodieAvroPayload;
 import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
@@ -39,7 +40,9 @@ import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.table.HoodieSparkTable;
 import org.apache.hudi.table.HoodieTimelineArchiveLog;
+
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.shell.core.CommandResult;
 
@@ -60,15 +63,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * Test Cases for {@link CompactionCommand}.
  */
-public class TestCompactionCommand extends AbstractShellIntegrationTest {
+@Tag("functional")
+public class TestCompactionCommand extends CLIFunctionalTestHarness {
 
   private String tableName;
   private String tablePath;
 
   @BeforeEach
   public void init() {
-    tableName = "test_table";
-    tablePath = basePath + tableName;
+    tableName = tableName();
+    tablePath = tablePath(tableName);
   }
 
   @Test
@@ -97,7 +101,7 @@ public class TestCompactionCommand extends AbstractShellIntegrationTest {
 
     HoodieCLI.getTableMetaClient().reloadActiveTimeline();
 
-    CommandResult cr = getShell().executeCommand("compactions show all");
+    CommandResult cr = shell().executeCommand("compactions show all");
     System.out.println(cr.getResult().toString());
 
     TableHeader header = new TableHeader().addTableHeaderField("Compaction Instant Time").addTableHeaderField("State")
@@ -129,7 +133,7 @@ public class TestCompactionCommand extends AbstractShellIntegrationTest {
 
     HoodieCLI.getTableMetaClient().reloadActiveTimeline();
 
-    CommandResult cr = getShell().executeCommand("compaction show --instant 001");
+    CommandResult cr = shell().executeCommand("compaction show --instant 001");
     System.out.println(cr.getResult().toString());
   }
 
@@ -148,7 +152,6 @@ public class TestCompactionCommand extends AbstractShellIntegrationTest {
           new HoodieInstant(HoodieInstant.State.INFLIGHT, COMPACTION_ACTION, timestamp), Option.empty());
     });
 
-    metaClient = HoodieTableMetaClient.reload(HoodieCLI.getTableMetaClient());
   }
 
   private void generateArchive() throws IOException {
@@ -156,12 +159,13 @@ public class TestCompactionCommand extends AbstractShellIntegrationTest {
     HoodieWriteConfig cfg = HoodieWriteConfig.newBuilder().withPath(tablePath)
         .withSchema(HoodieTestCommitMetadataGenerator.TRIP_EXAMPLE_SCHEMA).withParallelism(2, 2)
         .withCompactionConfig(HoodieCompactionConfig.newBuilder().retainCommits(1).archiveCommitsWith(2, 3).build())
+        .withMetadataConfig(HoodieMetadataConfig.newBuilder().enable(false).build())
         .forTable("test-trip-table").build();
     // archive
-    metaClient = HoodieTableMetaClient.reload(HoodieCLI.getTableMetaClient());
-    HoodieSparkTable table = HoodieSparkTable.create(cfg, context, metaClient);
+    HoodieTableMetaClient metaClient = HoodieTableMetaClient.reload(HoodieCLI.getTableMetaClient());
+    HoodieSparkTable table = HoodieSparkTable.create(cfg, context(), metaClient);
     HoodieTimelineArchiveLog archiveLog = new HoodieTimelineArchiveLog(cfg, table);
-    archiveLog.archiveIfRequired(context);
+    archiveLog.archiveIfRequired(context());
   }
 
   /**
@@ -173,7 +177,7 @@ public class TestCompactionCommand extends AbstractShellIntegrationTest {
 
     generateArchive();
 
-    CommandResult cr = getShell().executeCommand("compactions showarchived --startTs 001 --endTs 005");
+    CommandResult cr = shell().executeCommand("compactions showarchived --startTs 001 --endTs 005");
 
     // generate result
     Map<String, Integer> fileMap = new HashMap<>();
@@ -207,7 +211,7 @@ public class TestCompactionCommand extends AbstractShellIntegrationTest {
 
     generateArchive();
 
-    CommandResult cr = getShell().executeCommand("compaction showarchived --instant " + instance);
+    CommandResult cr = shell().executeCommand("compaction showarchived --instant " + instance);
 
     // generate expected
     String expected = new CompactionCommand().printCompaction(plan, "", false, -1, false);

@@ -40,12 +40,18 @@ import org.apache.hudi.common.table.timeline.versioning.TimelineLayoutVersion;
 import org.apache.hudi.common.table.view.FileSystemViewStorageConfig;
 import org.apache.hudi.common.util.ReflectionUtils;
 import org.apache.hudi.common.util.ValidationUtils;
+import org.apache.hudi.config.metrics.HoodieMetricsConfig;
+import org.apache.hudi.config.metrics.HoodieMetricsDatadogConfig;
+import org.apache.hudi.config.metrics.HoodieMetricsGraphiteConfig;
+import org.apache.hudi.config.metrics.HoodieMetricsJmxConfig;
+import org.apache.hudi.config.metrics.HoodieMetricsPrometheusConfig;
 import org.apache.hudi.execution.bulkinsert.BulkInsertSortMode;
 import org.apache.hudi.index.HoodieIndex;
 import org.apache.hudi.keygen.SimpleAvroKeyGenerator;
 import org.apache.hudi.keygen.constant.KeyGeneratorType;
 import org.apache.hudi.metrics.MetricsReporterType;
 import org.apache.hudi.metrics.datadog.DatadogHttpClient.ApiSite;
+import org.apache.hudi.table.RandomFileIdPrefixProvider;
 import org.apache.hudi.table.action.compact.CompactionTriggerStrategy;
 import org.apache.hudi.table.action.compact.strategy.CompactionStrategy;
 
@@ -412,6 +418,12 @@ public class HoodieWriteConfig extends HoodieConfig {
       .sinceVersion("0.9.0")
       .withDocumentation("Whether to include '_hoodie_operation' in the metadata fields. "
           + "Once enabled, all the changes of a record are persisted to the delta log directly without merge");
+
+  public static final ConfigProperty<String> FILEID_PREFIX_PROVIDER_CLASS = ConfigProperty
+      .key("hoodie.fileid.prefix.provider.class")
+      .defaultValue(RandomFileIdPrefixProvider.class.getName())
+      .sinceVersion("0.10.0")
+      .withDocumentation("File Id Prefix provider class, that implements `org.apache.hudi.fileid.FileIdPrefixProvider`");
 
   private ConsistencyGuardConfig consistencyGuardConfig;
 
@@ -1391,16 +1403,20 @@ public class HoodieWriteConfig extends HoodieConfig {
     return getInt(HoodieStorageConfig.LOGFILE_DATA_BLOCK_MAX_SIZE);
   }
 
-  public int getLogFileMaxSize() {
-    return getInt(HoodieStorageConfig.LOGFILE_MAX_SIZE);
-  }
-
   public double getParquetCompressionRatio() {
     return getDouble(HoodieStorageConfig.PARQUET_COMPRESSION_RATIO_FRACTION);
   }
 
   public CompressionCodecName getParquetCompressionCodec() {
     return CompressionCodecName.fromConf(getString(HoodieStorageConfig.PARQUET_COMPRESSION_CODEC_NAME));
+  }
+
+  public boolean parquetDictionaryEnabled() {
+    return getBoolean(HoodieStorageConfig.PARQUET_DICTIONARY_ENABLED);
+  }
+
+  public long getLogFileMaxSize() {
+    return getLong(HoodieStorageConfig.LOGFILE_MAX_SIZE);
   }
 
   public double getLogFileToParquetCompressionRatio() {
@@ -1452,23 +1468,27 @@ public class HoodieWriteConfig extends HoodieConfig {
   }
 
   public String getGraphiteServerHost() {
-    return getString(HoodieMetricsConfig.GRAPHITE_SERVER_HOST_NAME);
+    return getString(HoodieMetricsGraphiteConfig.GRAPHITE_SERVER_HOST_NAME);
   }
 
   public int getGraphiteServerPort() {
-    return getInt(HoodieMetricsConfig.GRAPHITE_SERVER_PORT_NUM);
+    return getInt(HoodieMetricsGraphiteConfig.GRAPHITE_SERVER_PORT_NUM);
   }
 
   public String getGraphiteMetricPrefix() {
-    return getString(HoodieMetricsConfig.GRAPHITE_METRIC_PREFIX_VALUE);
+    return getString(HoodieMetricsGraphiteConfig.GRAPHITE_METRIC_PREFIX_VALUE);
+  }
+
+  public int getGraphiteReportPeriodSeconds() {
+    return getInt(HoodieMetricsGraphiteConfig.GRAPHITE_REPORT_PERIOD_IN_SECONDS);
   }
 
   public String getJmxHost() {
-    return getString(HoodieMetricsConfig.JMX_HOST_NAME);
+    return getString(HoodieMetricsJmxConfig.JMX_HOST_NAME);
   }
 
   public String getJmxPort() {
-    return getString(HoodieMetricsConfig.JMX_PORT_NUM);
+    return getString(HoodieMetricsJmxConfig.JMX_PORT_NUM);
   }
 
   public int getDatadogReportPeriodSeconds() {
@@ -1659,10 +1679,6 @@ public class HoodieWriteConfig extends HoodieConfig {
     return metadataConfig.enabled();
   }
 
-  public boolean getFileListingMetadataVerify() {
-    return metadataConfig.validateFileListingMetadata();
-  }
-
   public int getMetadataInsertParallelism() {
     return getInt(HoodieMetadataConfig.INSERT_PARALLELISM_VALUE);
   }
@@ -1748,6 +1764,10 @@ public class HoodieWriteConfig extends HoodieConfig {
     return getBooleanOrDefault(ALLOW_OPERATION_METADATA_FIELD);
   }
 
+  public String getFileIdPrefixProviderClassName() {
+    return getString(FILEID_PREFIX_PROVIDER_CLASS);
+  }
+
   public static class Builder {
 
     protected final HoodieWriteConfig writeConfig = new HoodieWriteConfig();
@@ -1766,6 +1786,8 @@ public class HoodieWriteConfig extends HoodieConfig {
     private boolean isMetadataConfigSet = false;
     private boolean isLockConfigSet = false;
     private boolean isPreCommitValidationConfigSet = false;
+    private boolean isMetricsJmxConfigSet = false;
+    private boolean isMetricsGraphiteConfigSet = false;
 
     public Builder withEngineType(EngineType engineType) {
       this.engineType = engineType;
@@ -1917,6 +1939,18 @@ public class HoodieWriteConfig extends HoodieConfig {
     public Builder withLockConfig(HoodieLockConfig lockConfig) {
       writeConfig.getProps().putAll(lockConfig.getProps());
       isLockConfigSet = true;
+      return this;
+    }
+
+    public Builder withMetricsJmxConfig(HoodieMetricsJmxConfig metricsJmxConfig) {
+      writeConfig.getProps().putAll(metricsJmxConfig.getProps());
+      isMetricsJmxConfigSet = true;
+      return this;
+    }
+
+    public Builder withMetricsGraphiteConfig(HoodieMetricsGraphiteConfig mericsGraphiteConfig) {
+      writeConfig.getProps().putAll(mericsGraphiteConfig.getProps());
+      isMetricsGraphiteConfigSet = true;
       return this;
     }
 
@@ -2076,6 +2110,11 @@ public class HoodieWriteConfig extends HoodieConfig {
 
     public Builder withAllowOperationMetadataField(boolean allowOperationMetadataField) {
       writeConfig.setValue(ALLOW_OPERATION_METADATA_FIELD, Boolean.toString(allowOperationMetadataField));
+      return this;
+    }
+
+    public Builder withFileIdPrefixProviderClassName(String fileIdPrefixProviderClassName) {
+      writeConfig.setValue(FILEID_PREFIX_PROVIDER_CLASS, fileIdPrefixProviderClassName);
       return this;
     }
 

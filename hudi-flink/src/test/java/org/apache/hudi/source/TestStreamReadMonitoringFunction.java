@@ -89,7 +89,7 @@ public class TestStreamReadMonitoringFunction {
 
       assertTrue(sourceContext.splits.stream().allMatch(split -> split.getInstantRange().isPresent()),
           "All the instants should have range limit");
-      String latestCommit = TestUtils.getLatestCommit(tempFile.getAbsolutePath());
+      String latestCommit = TestUtils.getLastCompleteInstant(tempFile.getAbsolutePath());
       assertTrue(sourceContext.splits.stream().allMatch(split -> split.getLatestCommit().equals(latestCommit)),
           "All the splits should be with latestCommit instant time");
 
@@ -143,8 +143,8 @@ public class TestStreamReadMonitoringFunction {
     // all the splits should come from the second commit.
     TestData.writeData(TestData.DATA_SET_INSERT, conf);
     TestData.writeData(TestData.DATA_SET_UPDATE_INSERT, conf);
-    String specifiedCommit = TestUtils.getLatestCommit(tempFile.getAbsolutePath());
-    conf.setString(FlinkOptions.READ_STREAMING_START_COMMIT, specifiedCommit);
+    String specifiedCommit = TestUtils.getLastCompleteInstant(tempFile.getAbsolutePath());
+    conf.setString(FlinkOptions.READ_START_COMMIT, specifiedCommit);
     StreamReadMonitoringFunction function = TestUtils.getMonitorFunc(conf);
     try (AbstractStreamOperatorTestHarness<MergeOnReadInputSplit> harness = createHarness(function)) {
       harness.setup();
@@ -160,6 +160,37 @@ public class TestStreamReadMonitoringFunction {
           sourceContext.getPartitionPaths(), is("par1,par2,par3,par4"));
       assertTrue(sourceContext.splits.stream().allMatch(split -> split.getInstantRange().isPresent()),
           "All the instants should have range limit");
+      assertTrue(sourceContext.splits.stream().allMatch(split -> split.getLatestCommit().equals(specifiedCommit)),
+          "All the splits should be with specified instant time");
+
+      // Stop the stream task.
+      function.close();
+    }
+  }
+
+  @Test
+  public void testConsumeFromEarliestCommit() throws Exception {
+    // write 2 commits first, then specify the start commit as 'earliest',
+    // all the splits should come from the earliest commit.
+    TestData.writeData(TestData.DATA_SET_INSERT, conf);
+    TestData.writeData(TestData.DATA_SET_UPDATE_INSERT, conf);
+    String specifiedCommit = TestUtils.getLastCompleteInstant(tempFile.getAbsolutePath());
+    conf.setString(FlinkOptions.READ_START_COMMIT, FlinkOptions.START_COMMIT_EARLIEST);
+    StreamReadMonitoringFunction function = TestUtils.getMonitorFunc(conf);
+    try (AbstractStreamOperatorTestHarness<MergeOnReadInputSplit> harness = createHarness(function)) {
+      harness.setup();
+      harness.open();
+
+      CountDownLatch latch = new CountDownLatch(4);
+      CollectingSourceContext sourceContext = new CollectingSourceContext(latch);
+
+      runAsync(sourceContext, function);
+
+      assertTrue(latch.await(WAIT_TIME_MILLIS, TimeUnit.MILLISECONDS), "Should finish splits generation");
+      assertThat("Should produce the expected splits",
+          sourceContext.getPartitionPaths(), is("par1,par2,par3,par4"));
+      assertTrue(sourceContext.splits.stream().noneMatch(split -> split.getInstantRange().isPresent()),
+          "No instants should have range limit");
       assertTrue(sourceContext.splits.stream().allMatch(split -> split.getLatestCommit().equals(specifiedCommit)),
           "All the splits should be with specified instant time");
 

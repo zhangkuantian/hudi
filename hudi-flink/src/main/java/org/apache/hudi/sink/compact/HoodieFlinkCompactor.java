@@ -66,7 +66,10 @@ public class HoodieFlinkCompactor {
     // set table schema
     CompactionUtil.setAvroSchema(conf, metaClient);
 
-    HoodieFlinkWriteClient writeClient = StreamerUtil.createWriteClient(conf, null);
+    // infer changelog mode
+    CompactionUtil.inferChangelogMode(conf, metaClient);
+
+    HoodieFlinkWriteClient writeClient = StreamerUtil.createWriteClient(conf);
     HoodieFlinkTable<?> table = writeClient.getHoodieTable();
 
     // judge whether have operation
@@ -148,5 +151,6 @@ public class HoodieFlinkCompactor {
         .setParallelism(1);
 
     env.execute("flink_hudi_compaction");
+    writeClient.close();
   }
 }

@@ -77,7 +77,7 @@ import java.util.Set;
  * Existing data:
  *     rec1_1, rec2_1, rec3_1, rec4_1
  *
- * For every existing record, merge w/ incoming if requried and write to storage.
+ * For every existing record, merge w/ incoming if required and write to storage.
  *    => rec1_1 and rec1_2 is merged to write rec1_2 to storage
  *    => rec2_1 is written as is
  *    => rec3_1 is written as is
@@ -177,7 +177,7 @@ public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends H
       writeStatus.setPartitionPath(partitionPath);
       writeStatus.getStat().setPartitionPath(partitionPath);
       writeStatus.getStat().setFileId(fileId);
-      writeStatus.getStat().setPath(new Path(config.getBasePath()), newFilePath);
+      setWriteStatusPath();
 
       // Create Marker file
       createMarkerFile(partitionPath, newFileName);
@@ -255,6 +255,18 @@ public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends H
       updatedRecordsWritten++;
     }
     return writeRecord(hoodieRecord, indexedRecord);
+  }
+
+  protected void writeInsertRecord(HoodieRecord<T> hoodieRecord) throws IOException {
+    Schema schema = useWriterSchema ? tableSchemaWithMetaFields : tableSchema;
+    Option<IndexedRecord> insertRecord = hoodieRecord.getData().getInsertValue(schema, config.getProps());
+    // just skip the ignored record
+    if (insertRecord.isPresent() && insertRecord.get().equals(IGNORE_RECORD)) {
+      return;
+    }
+    if (writeRecord(hoodieRecord, insertRecord)) {
+      insertRecordsWritten++;
+    }
   }
 
   protected boolean writeRecord(HoodieRecord<T> hoodieRecord, Option<IndexedRecord> indexedRecord) {
@@ -340,28 +352,28 @@ public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends H
     }
   }
 
+  protected void writeIncomingRecords() throws IOException {
+    // write out any pending records (this can happen when inserts are turned into updates)
+    Iterator<HoodieRecord<T>> newRecordsItr = (keyToNewRecords instanceof ExternalSpillableMap)
+        ? ((ExternalSpillableMap)keyToNewRecords).iterator() : keyToNewRecords.values().iterator();
+    while (newRecordsItr.hasNext()) {
+      HoodieRecord<T> hoodieRecord = newRecordsItr.next();
+      if (!writtenRecordKeys.contains(hoodieRecord.getRecordKey())) {
+        writeInsertRecord(hoodieRecord);
+      }
+    }
+  }
+
   @Override
   public List<WriteStatus> close() {
     try {
-      // write out any pending records (this can happen when inserts are turned into updates)
-      Iterator<HoodieRecord<T>> newRecordsItr = (keyToNewRecords instanceof ExternalSpillableMap)
-          ? ((ExternalSpillableMap)keyToNewRecords).iterator() : keyToNewRecords.values().iterator();
-      while (newRecordsItr.hasNext()) {
-        HoodieRecord<T> hoodieRecord = newRecordsItr.next();
-        if (!writtenRecordKeys.contains(hoodieRecord.getRecordKey())) {
-          Schema schema = useWriterSchema ? tableSchemaWithMetaFields : tableSchema;
-          Option<IndexedRecord> insertRecord =
-              hoodieRecord.getData().getInsertValue(schema, config.getProps());
-          // just skip the ignore record
-          if (insertRecord.isPresent() && insertRecord.get().equals(IGNORE_RECORD)) {
-            continue;
-          }
-          writeRecord(hoodieRecord, insertRecord);
-          insertRecordsWritten++;
-        }
-      }
+      writeIncomingRecords();
 
-      ((ExternalSpillableMap) keyToNewRecords).close();
+      if (keyToNewRecords instanceof ExternalSpillableMap) {
+        ((ExternalSpillableMap) keyToNewRecords).close();
+      } else {
+        keyToNewRecords.clear();
+      }
       writtenRecordKeys.clear();
 
       if (fileWriter != null) {

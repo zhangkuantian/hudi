@@ -18,7 +18,6 @@
 
 package org.apache.hudi.sink.utils;
 
-import org.apache.hudi.client.HoodieFlinkWriteClient;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.configuration.FlinkOptions;
@@ -95,7 +94,7 @@ public class StreamWriteFunctionWrapper<I> {
   /**
    * Stream write function.
    */
-  private StreamWriteFunction<Object, HoodieRecord<?>, Object> writeFunction;
+  private StreamWriteFunction<HoodieRecord<?>> writeFunction;
 
   private CompactFunctionWrapper compactFunctionWrapper;
 
@@ -209,11 +208,6 @@ public class StreamWriteFunctionWrapper<I> {
 
   public Map<String, List<HoodieRecord>> getDataBuffer() {
     return this.writeFunction.getDataBuffer();
-  }
-
-  @SuppressWarnings("rawtypes")
-  public HoodieFlinkWriteClient getWriteClient() {
-    return this.writeFunction.getWriteClient();
   }
 
   public void checkpointFunction(long checkpointId) throws Exception {

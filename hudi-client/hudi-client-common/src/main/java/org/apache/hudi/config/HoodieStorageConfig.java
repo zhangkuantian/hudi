@@ -110,6 +110,11 @@ public class HoodieStorageConfig extends HoodieConfig {
       .defaultValue("gzip")
       .withDocumentation("Compression Codec for parquet files");
 
+  public static final ConfigProperty<Boolean> PARQUET_DICTIONARY_ENABLED = ConfigProperty
+      .key("hoodie.parquet.dictionary.enabled")
+      .defaultValue(true)
+      .withDocumentation("Whether to use dictionary encoding");
+
   public static final ConfigProperty<String> HFILE_COMPRESSION_ALGORITHM_NAME = ConfigProperty
       .key("hoodie.hfile.compression.algorithm")
       .defaultValue("GZ")
@@ -292,7 +297,7 @@ public class HoodieStorageConfig extends HoodieConfig {
       return this;
     }
 
-    public Builder logFileMaxSize(int logFileSize) {
+    public Builder logFileMaxSize(long logFileSize) {
       storageConfig.setValue(LOGFILE_MAX_SIZE, String.valueOf(logFileSize));
       return this;
     }

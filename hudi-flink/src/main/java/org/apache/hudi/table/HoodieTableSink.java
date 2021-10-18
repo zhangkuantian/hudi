@@ -63,27 +63,31 @@ public class HoodieTableSink implements DynamicTableSink, SupportsPartitioning, 
     return (DataStreamSinkProvider) dataStream -> {
 
       // setup configuration
-      long ckpTimeout = dataStream.getExecutionEnvironment()
-          .getCheckpointConfig().getCheckpointTimeout();
-      conf.setLong(FlinkOptions.WRITE_COMMIT_ACK_TIMEOUT, ckpTimeout);
+      long ckpInterval = dataStream.getExecutionEnvironment()
+          .getCheckpointConfig().getCheckpointInterval();
+      conf.setLong(FlinkOptions.WRITE_COMMIT_ACK_TIMEOUT, ckpInterval * 5); // five checkpoints interval
 
       RowType rowType = (RowType) schema.toSourceRowDataType().notNull().getLogicalType();
 
       // bulk_insert mode
       final String writeOperation = this.conf.get(FlinkOptions.OPERATION);
       if (WriteOperationType.fromValue(writeOperation) == WriteOperationType.BULK_INSERT) {
-        return Pipelines.bulkInsert(conf, rowType, dataStream);
+        return context.isBounded() ? Pipelines.bulkInsert(conf, rowType, dataStream) : Pipelines.append(conf, rowType, dataStream);
+      }
+
+      // Append mode
+      if (StreamerUtil.allowDuplicateInserts(conf)) {
+        return Pipelines.append(conf, rowType, dataStream);
       }
 
       // default parallelism
       int parallelism = dataStream.getExecutionConfig().getParallelism();
+      DataStream<Object> pipeline;
 
       // bootstrap
-      final DataStream<HoodieRecord> dataStream1 = Pipelines.bootstrap(conf, rowType, parallelism, dataStream, context.isBounded());
-
+      final DataStream<HoodieRecord> hoodieRecordDataStream = Pipelines.bootstrap(conf, rowType, parallelism, dataStream, context.isBounded());
       // write pipeline
-      DataStream<Object> pipeline = Pipelines.hoodieStreamWrite(conf, parallelism, dataStream1);
-
+      pipeline = Pipelines.hoodieStreamWrite(conf, parallelism, hoodieRecordDataStream);
       // compaction
       if (StreamerUtil.needsAsyncCompaction(conf)) {
         return Pipelines.compact(conf, pipeline);
