@@ -106,8 +106,8 @@ public class TestHoodieDeltaStreamerWithMultiWriter extends SparkClientFunctiona
       } else {
         TestHoodieDeltaStreamer.TestHelpers.assertAtleastNCompactionCommits(3, tableBasePath, fs());
       }
-      TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(totalRecords, tableBasePath + "/*/*.parquet", sqlContext());
-      TestHoodieDeltaStreamer.TestHelpers.assertDistanceCount(totalRecords, tableBasePath + "/*/*.parquet", sqlContext());
+      TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(totalRecords, tableBasePath, sqlContext());
+      TestHoodieDeltaStreamer.TestHelpers.assertDistanceCount(totalRecords, tableBasePath, sqlContext());
       return true;
     });
 
@@ -168,8 +168,8 @@ public class TestHoodieDeltaStreamerWithMultiWriter extends SparkClientFunctiona
       } else {
         TestHoodieDeltaStreamer.TestHelpers.assertAtleastNCompactionCommits(3, tableBasePath, fs());
       }
-      TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(totalRecords, tableBasePath + "/*/*.parquet", sqlContext());
-      TestHoodieDeltaStreamer.TestHelpers.assertDistanceCount(totalRecords, tableBasePath + "/*/*.parquet", sqlContext());
+      TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(totalRecords, tableBasePath, sqlContext());
+      TestHoodieDeltaStreamer.TestHelpers.assertDistanceCount(totalRecords, tableBasePath, sqlContext());
       return true;
     });
 
@@ -236,8 +236,8 @@ public class TestHoodieDeltaStreamerWithMultiWriter extends SparkClientFunctiona
       } else {
         TestHoodieDeltaStreamer.TestHelpers.assertAtleastNCompactionCommits(3, tableBasePath, fs());
       }
-      TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(totalRecords, tableBasePath + "/*/*.parquet", sqlContext());
-      TestHoodieDeltaStreamer.TestHelpers.assertDistanceCount(totalRecords, tableBasePath + "/*/*.parquet", sqlContext());
+      TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(totalRecords, tableBasePath, sqlContext());
+      TestHoodieDeltaStreamer.TestHelpers.assertDistanceCount(totalRecords, tableBasePath, sqlContext());
       return true;
     });
 
@@ -305,7 +305,7 @@ public class TestHoodieDeltaStreamerWithMultiWriter extends SparkClientFunctiona
     props.setProperty("include", "sql-transformer.properties");
     props.setProperty("hoodie.datasource.write.keygenerator.class", TestHoodieDeltaStreamer.TestGenerator.class.getName());
     props.setProperty("hoodie.datasource.write.recordkey.field", "_row_key");
-    props.setProperty("hoodie.datasource.write.partitionpath.field", "not_there");
+    props.setProperty("hoodie.datasource.write.partitionpath.field", "partition_path");
     props.setProperty("hoodie.deltastreamer.schemaprovider.source.schema.file", basePath + "/source.avsc");
     props.setProperty("hoodie.deltastreamer.schemaprovider.target.schema.file", basePath + "/target.avsc");
 
@@ -362,27 +362,27 @@ public class TestHoodieDeltaStreamerWithMultiWriter extends SparkClientFunctiona
       } else {
         TestHoodieDeltaStreamer.TestHelpers.assertAtleastNCompactionCommitsAfterCommit(3, lastSuccessfulCommit, tableBasePath, fs());
       }
-      TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(totalRecords, tableBasePath + "/*/*.parquet", sqlContext());
-      TestHoodieDeltaStreamer.TestHelpers.assertDistanceCount(totalRecords, tableBasePath + "/*/*.parquet", sqlContext());
+      TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(totalRecords, tableBasePath, sqlContext());
+      TestHoodieDeltaStreamer.TestHelpers.assertDistanceCount(totalRecords, tableBasePath, sqlContext());
       return true;
     };
 
-    AtomicBoolean continousFailed = new AtomicBoolean(false);
+    AtomicBoolean continuousFailed = new AtomicBoolean(false);
     AtomicBoolean backfillFailed = new AtomicBoolean(false);
     try {
       Future regularIngestionJobFuture = service.submit(() -> {
         try {
           deltaStreamerTestRunner(ingestionJob, cfgIngestionJob, conditionForRegularIngestion, jobId);
         } catch (Throwable ex) {
-          continousFailed.set(true);
+          continuousFailed.set(true);
           LOG.error("Continuous job failed " + ex.getMessage());
           throw new RuntimeException(ex);
         }
       });
       Future backfillJobFuture = service.submit(() -> {
         try {
-          // trigger backfill atleast after 1 requested entry is added to timline from continuous job. If not, there is a chance that backfill will complete even before
-          // continous job starts.
+          // trigger backfill atleast after 1 requested entry is added to timeline from continuous job. If not, there is a chance that backfill will complete even before
+          // continuous job starts.
           awaitCondition(new GetCommitsAfterInstant(tableBasePath, lastSuccessfulCommit));
           backfillJob.sync();
         } catch (Throwable ex) {

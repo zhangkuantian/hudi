@@ -70,11 +70,12 @@ public class LockManager implements Serializable, AutoCloseable {
           }
           LOG.info("Retrying to acquire lock...");
           Thread.sleep(maxWaitTimeInMs);
-          retryCount++;
         } catch (HoodieLockException | InterruptedException e) {
           if (retryCount >= maxRetries) {
             throw new HoodieLockException("Unable to acquire lock, lock object ", e);
           }
+        } finally {
+          retryCount++;
         }
       }
       if (!acquired) {
@@ -83,6 +84,10 @@ public class LockManager implements Serializable, AutoCloseable {
     }
   }
 
+  /**
+   * We need to take care of the scenarios that current thread may not be the holder of this lock
+   * and tries to call unlock()
+   */
   public void unlock() {
     if (writeConfig.getWriteConcurrencyMode().supportsOptimisticConcurrencyControl()) {
       getLockProvider().unlock();

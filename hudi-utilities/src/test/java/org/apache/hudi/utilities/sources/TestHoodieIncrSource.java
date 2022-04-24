@@ -48,6 +48,7 @@ import java.util.Properties;
 
 import static org.apache.hudi.testutils.Assertions.assertNoWriteErrors;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 public class TestHoodieIncrSource extends HoodieClientTestHarness {
 
@@ -64,7 +65,11 @@ public class TestHoodieIncrSource extends HoodieClientTestHarness {
   @Test
   public void testHoodieIncrSource() throws IOException {
     HoodieWriteConfig writeConfig = getConfigBuilder(basePath)
-        .withCompactionConfig(HoodieCompactionConfig.newBuilder().archiveCommitsWith(2,3).retainCommits(1).build()).withMetadataConfig(HoodieMetadataConfig.newBuilder().enable(false).build()).build();
+        .withCompactionConfig(HoodieCompactionConfig.newBuilder()
+            .archiveCommitsWith(2, 3).retainCommits(1).build())
+        .withMetadataConfig(HoodieMetadataConfig.newBuilder()
+            .withMaxNumDeltaCommitsBeforeCompaction(1).build())
+        .build();
 
     SparkRDDWriteClient writeClient = new SparkRDDWriteClient(context, writeConfig);
     Pair<String, List<HoodieRecord>> inserts = writeRecords(writeClient, true, null, "100");
@@ -72,7 +77,6 @@ public class TestHoodieIncrSource extends HoodieClientTestHarness {
     Pair<String, List<HoodieRecord>> inserts3 = writeRecords(writeClient, true, null, "300");
     Pair<String, List<HoodieRecord>> inserts4 = writeRecords(writeClient, true, null, "400");
     Pair<String, List<HoodieRecord>> inserts5 = writeRecords(writeClient, true, null, "500");
-
 
     // read everything upto latest
     readAndAssert(IncrSourceHelper.MissingCheckpointStrategy.READ_UPTO_LATEST_COMMIT, Option.empty(), 500, inserts5.getKey());
@@ -85,6 +89,14 @@ public class TestHoodieIncrSource extends HoodieClientTestHarness {
 
     // read just the latest
     readAndAssert(IncrSourceHelper.MissingCheckpointStrategy.READ_LATEST, Option.empty(), 100, inserts5.getKey());
+
+    // ensure checkpoint does not move
+    readAndAssert(IncrSourceHelper.MissingCheckpointStrategy.READ_LATEST, Option.of(inserts5.getKey()), 0, inserts5.getKey());
+
+    Pair<String, List<HoodieRecord>> inserts6 = writeRecords(writeClient, true, null, "600");
+
+    // insert new batch and ensure the checkpoint moves
+    readAndAssert(IncrSourceHelper.MissingCheckpointStrategy.READ_LATEST, Option.of(inserts5.getKey()), 100, inserts6.getKey());
   }
 
   private void readAndAssert(IncrSourceHelper.MissingCheckpointStrategy missingCheckpointStrategy, Option<String> checkpointToPull, int expectedCount, String expectedCheckpoint) {
@@ -98,7 +110,11 @@ public class TestHoodieIncrSource extends HoodieClientTestHarness {
     // read everything until latest
     Pair<Option<Dataset<Row>>, String> batchCheckPoint = incrSource.fetchNextBatch(checkpointToPull, 500);
     Assertions.assertNotNull(batchCheckPoint.getValue());
-    assertEquals(batchCheckPoint.getKey().get().count(), expectedCount);
+    if (expectedCount == 0) {
+      assertFalse(batchCheckPoint.getKey().isPresent());
+    } else {
+      assertEquals(batchCheckPoint.getKey().get().count(), expectedCount);
+    }
     Assertions.assertEquals(batchCheckPoint.getRight(), expectedCheckpoint);
   }
 

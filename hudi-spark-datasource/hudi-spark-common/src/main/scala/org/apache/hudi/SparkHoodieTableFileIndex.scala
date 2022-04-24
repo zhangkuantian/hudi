@@ -18,8 +18,9 @@
 package org.apache.hudi
 
 import org.apache.hadoop.fs.{FileStatus, Path}
+import org.apache.hudi.BaseHoodieTableFileIndex.PartitionPath
 import org.apache.hudi.DataSourceReadOptions.{QUERY_TYPE, QUERY_TYPE_INCREMENTAL_OPT_VAL, QUERY_TYPE_READ_OPTIMIZED_OPT_VAL, QUERY_TYPE_SNAPSHOT_OPT_VAL}
-import org.apache.hudi.SparkHoodieTableFileIndex.{deduceQueryType, generateFieldMap}
+import org.apache.hudi.SparkHoodieTableFileIndex.{deduceQueryType, generateFieldMap, toJavaOption}
 import org.apache.hudi.client.common.HoodieSparkEngineContext
 import org.apache.hudi.common.config.TypedProperties
 import org.apache.hudi.common.model.{FileSlice, HoodieTableQueryType}
@@ -36,10 +37,10 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.unsafe.types.UTF8String
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 
 /**
- * Implementation of the [[HoodieTableFileIndexBase]] for Spark
+ * Implementation of the [[BaseHoodieTableFileIndex]] for Spark
  *
  * @param spark spark session
  * @param metaClient Hudi table's meta-client
@@ -55,14 +56,16 @@ class SparkHoodieTableFileIndex(spark: SparkSession,
                                 queryPaths: Seq[Path],
                                 specifiedQueryInstant: Option[String] = None,
                                 @transient fileStatusCache: FileStatusCache = NoopCache)
-  extends HoodieTableFileIndexBase(
-    engineContext = new HoodieSparkEngineContext(new JavaSparkContext(spark.sparkContext)),
+  extends BaseHoodieTableFileIndex(
+    new HoodieSparkEngineContext(new JavaSparkContext(spark.sparkContext)),
     metaClient,
     configProperties,
-    queryType = deduceQueryType(configProperties),
-    queryPaths,
-    specifiedQueryInstant,
-    fileStatusCache = SparkHoodieTableFileIndex.adapt(fileStatusCache)
+    deduceQueryType(configProperties),
+    queryPaths.asJava,
+    toJavaOption(specifiedQueryInstant),
+    false,
+    false,
+    SparkHoodieTableFileIndex.adapt(fileStatusCache)
   )
     with SparkAdapterSupport
     with Logging {
@@ -117,6 +120,9 @@ class SparkHoodieTableFileIndex(spark: SparkSession,
     StructType(schema.fields.filterNot(f => partitionColumns.contains(f.name)))
   }
 
+  /**
+   * @VisibleForTesting
+   */
   def partitionSchema: StructType = {
     if (queryAsNonePartitionedTable) {
       // If we read it as Non-Partitioned table, we should not
@@ -131,15 +137,27 @@ class SparkHoodieTableFileIndex(spark: SparkSession,
    * Fetch list of latest base files w/ corresponding log files, after performing
    * partition pruning
    *
+   * TODO unify w/ HoodieFileIndex#listFiles
+   *
    * @param partitionFilters partition column filters
    * @return mapping from string partition paths to its base/log files
    */
   def listFileSlices(partitionFilters: Seq[Expression]): Map[String, Seq[FileSlice]] = {
     // Prune the partition path by the partition filters
-    val prunedPartitions = prunePartition(cachedAllInputFileSlices.keys.toSeq, partitionFilters)
+    val prunedPartitions = prunePartition(cachedAllInputFileSlices.keySet().asScala.toSeq, partitionFilters)
     prunedPartitions.map(partition => {
-      (partition.path, cachedAllInputFileSlices(partition))
+      (partition.path, cachedAllInputFileSlices.get(partition).asScala)
     }).toMap
+  }
+
+  /**
+   * Get all the cached partition paths pruned by the filter.
+   *
+   * @param predicates The filter condition
+   * @return The pruned partition paths
+   */
+  def getPartitionPaths(predicates: Seq[Expression]): Seq[PartitionPath] = {
+    prunePartition(cachedAllInputFileSlices.keySet().asScala.toSeq, predicates)
   }
 
   /**
@@ -148,11 +166,9 @@ class SparkHoodieTableFileIndex(spark: SparkSession,
    *
    * @param partitionPaths All the partition paths.
    * @param predicates     The filter condition.
-   * @return The Pruned partition paths.
+   * @return The pruned partition paths.
    */
-  def prunePartition(partitionPaths: Seq[PartitionPath],
-                     predicates: Seq[Expression]): Seq[PartitionPath] = {
-
+  protected def prunePartition(partitionPaths: Seq[PartitionPath], predicates: Seq[Expression]): Seq[PartitionPath] = {
     val partitionColumnNames = partitionSchema.fields.map(_.name).toSet
     val partitionPruningPredicates = predicates.filter {
       _.references.map(_.name).toSet.subsetOf(partitionColumnNames)
@@ -167,8 +183,9 @@ class SparkHoodieTableFileIndex(spark: SparkSession,
       })
 
       val prunedPartitionPaths = partitionPaths.filter {
-        case PartitionPath(_, values) => boundPredicate.eval(InternalRow.fromSeq(values))
+        partitionPath => boundPredicate.eval(InternalRow.fromSeq(partitionPath.values))
       }
+
       logInfo(s"Total partition size is: ${partitionPaths.size}," +
         s" after partition prune size is: ${prunedPartitionPaths.size}")
       prunedPartitionPaths
@@ -177,7 +194,7 @@ class SparkHoodieTableFileIndex(spark: SparkSession,
     }
   }
 
-  protected def parsePartitionColumnValues(partitionColumns: Array[String], partitionPath: String): Array[Any] = {
+  protected def parsePartitionColumnValues(partitionColumns: Array[String], partitionPath: String): Array[Object] = {
     if (partitionColumns.length == 0) {
       // This is a non-partitioned table
       Array.empty
@@ -225,7 +242,7 @@ class SparkHoodieTableFileIndex(spark: SparkSession,
         val pathWithPartitionName = new Path(basePath, partitionWithName)
         val partitionValues = parsePartitionPath(pathWithPartitionName, partitionSchema)
 
-        partitionValues.toArray
+        partitionValues.map(_.asInstanceOf[Object]).toArray
       }
     }
   }
@@ -246,6 +263,13 @@ class SparkHoodieTableFileIndex(spark: SparkSession,
 }
 
 object SparkHoodieTableFileIndex {
+
+  implicit def toJavaOption[T](opt: Option[T]): org.apache.hudi.common.util.Option[T] =
+    if (opt.isDefined) {
+      org.apache.hudi.common.util.Option.of(opt.get)
+    } else {
+      org.apache.hudi.common.util.Option.empty()
+    }
 
   /**
    * This method unravels [[StructType]] into a [[Map]] of pairs of dot-path notation with corresponding
@@ -287,17 +311,17 @@ object SparkHoodieTableFileIndex {
   }
 
   private def deduceQueryType(configProperties: TypedProperties): HoodieTableQueryType = {
-    configProperties(QUERY_TYPE.key()) match {
-      case QUERY_TYPE_SNAPSHOT_OPT_VAL => HoodieTableQueryType.QUERY_TYPE_SNAPSHOT
-      case QUERY_TYPE_INCREMENTAL_OPT_VAL => HoodieTableQueryType.QUERY_TYPE_INCREMENTAL
-      case QUERY_TYPE_READ_OPTIMIZED_OPT_VAL => HoodieTableQueryType.QUERY_TYPE_READ_OPTIMIZED
+    configProperties.asScala.getOrElse(QUERY_TYPE.key, QUERY_TYPE.defaultValue) match {
+      case QUERY_TYPE_SNAPSHOT_OPT_VAL => HoodieTableQueryType.SNAPSHOT
+      case QUERY_TYPE_INCREMENTAL_OPT_VAL => HoodieTableQueryType.INCREMENTAL
+      case QUERY_TYPE_READ_OPTIMIZED_OPT_VAL => HoodieTableQueryType.READ_OPTIMIZED
       case _ @ qt => throw new IllegalArgumentException(s"query-type ($qt) not supported")
     }
   }
 
-  private def adapt(cache: FileStatusCache): FileStatusCacheTrait = {
-    new FileStatusCacheTrait {
-      override def get(path: Path): Option[Array[FileStatus]] = cache.getLeafFiles(path)
+  private def adapt(cache: FileStatusCache): BaseHoodieTableFileIndex.FileStatusCache = {
+    new BaseHoodieTableFileIndex.FileStatusCache {
+      override def get(path: Path): org.apache.hudi.common.util.Option[Array[FileStatus]] = toJavaOption(cache.getLeafFiles(path))
       override def put(path: Path, leafFiles: Array[FileStatus]): Unit = cache.putLeafFiles(path, leafFiles)
       override def invalidate(): Unit = cache.invalidateAll()
     }

@@ -47,7 +47,7 @@ import java.util.Queue;
  */
 public class HoodieSortedMergeHandle<T extends HoodieRecordPayload, I, K, O> extends HoodieMergeHandle<T, I, K, O> {
 
-  private Queue<String> newRecordKeysSorted = new PriorityQueue<>();
+  private final Queue<String> newRecordKeysSorted = new PriorityQueue<>();
 
   public HoodieSortedMergeHandle(HoodieWriteConfig config, String instantTime, HoodieTable<T, I, K, O> hoodieTable,
                                  Iterator<HoodieRecord<T>> recordItr, String partitionPath, String fileId, TaskContextSupplier taskContextSupplier,
@@ -90,7 +90,7 @@ public class HoodieSortedMergeHandle<T extends HoodieRecordPayload, I, K, O> ext
         throw new HoodieUpsertException("Insert/Update not in sorted order");
       }
       try {
-        if (useWriterSchema) {
+        if (useWriterSchemaForCompaction) {
           writeRecord(hoodieRecord, hoodieRecord.getData().getInsertValue(tableSchemaWithMetaFields, config.getProps()));
         } else {
           writeRecord(hoodieRecord, hoodieRecord.getData().getInsertValue(tableSchema, config.getProps()));
@@ -108,11 +108,12 @@ public class HoodieSortedMergeHandle<T extends HoodieRecordPayload, I, K, O> ext
   @Override
   public List<WriteStatus> close() {
     // write out any pending records (this can happen when inserts are turned into updates)
-    newRecordKeysSorted.stream().forEach(key -> {
+    while (!newRecordKeysSorted.isEmpty()) {
       try {
+        String key = newRecordKeysSorted.poll();
         HoodieRecord<T> hoodieRecord = keyToNewRecords.get(key);
         if (!writtenRecordKeys.contains(hoodieRecord.getRecordKey())) {
-          if (useWriterSchema) {
+          if (useWriterSchemaForCompaction) {
             writeRecord(hoodieRecord, hoodieRecord.getData().getInsertValue(tableSchemaWithMetaFields, config.getProps()));
           } else {
             writeRecord(hoodieRecord, hoodieRecord.getData().getInsertValue(tableSchema, config.getProps()));
@@ -122,7 +123,7 @@ public class HoodieSortedMergeHandle<T extends HoodieRecordPayload, I, K, O> ext
       } catch (IOException e) {
         throw new HoodieUpsertException("Failed to close UpdateHandle", e);
       }
-    });
+    }
     newRecordKeysSorted.clear();
     keyToNewRecords.clear();
 

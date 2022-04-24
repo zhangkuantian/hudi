@@ -65,10 +65,10 @@ public class HoodieReadClient<T extends HoodieRecordPayload<T>> implements Seria
 
   /**
    * TODO: We need to persist the index type into hoodie.properties and be able to access the index just with a simple
-   * basepath pointing to the table. Until, then just always assume a BloomIndex
+   * base path pointing to the table. Until, then just always assume a BloomIndex
    */
   private final transient HoodieIndex<?, ?> index;
-  private HoodieTable<T, JavaRDD<HoodieRecord<T>>, JavaRDD<HoodieKey>, JavaRDD<WriteStatus>> hoodieTable;
+  private HoodieTable hoodieTable;
   private transient Option<SQLContext> sqlContextOpt;
   private final transient HoodieSparkEngineContext context;
   private final transient Configuration hadoopConf;

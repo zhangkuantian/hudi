@@ -18,8 +18,7 @@
 
 package org.apache.hudi.hadoop;
 
-import org.apache.hadoop.conf.Configurable;
-import org.apache.hadoop.conf.Configuration;
+import org.apache.avro.Schema;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -36,29 +35,30 @@ import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.engine.HoodieLocalEngineContext;
 import org.apache.hudi.common.model.FileSlice;
 import org.apache.hudi.common.model.HoodieBaseFile;
-import org.apache.hudi.common.model.HoodieLogFile;
 import org.apache.hudi.common.model.HoodieTableQueryType;
+import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
+import org.apache.hudi.common.table.TableSchemaResolver;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
 import org.apache.hudi.common.util.CollectionUtils;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
+import org.apache.hudi.hadoop.realtime.HoodieVirtualKeyInfo;
 import org.apache.hudi.hadoop.utils.HoodieHiveUtils;
 import org.apache.hudi.hadoop.utils.HoodieInputFormatUtils;
-import scala.collection.JavaConverters;
-import scala.collection.Seq;
 
 import javax.annotation.Nonnull;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import static org.apache.hudi.common.util.ValidationUtils.checkState;
 
@@ -74,38 +74,7 @@ import static org.apache.hudi.common.util.ValidationUtils.checkState;
  *
  * NOTE: This class is invariant of the underlying file-format of the files being read
  */
-public class HoodieCopyOnWriteTableInputFormat extends FileInputFormat<NullWritable, ArrayWritable>
-    implements Configurable {
-
-  protected Configuration conf;
-
-  @Nonnull
-  private static RealtimeFileStatus createRealtimeFileStatusUnchecked(HoodieBaseFile baseFile, Stream<HoodieLogFile> logFiles) {
-    List<HoodieLogFile> sortedLogFiles = logFiles.sorted(HoodieLogFile.getLogFileComparator()).collect(Collectors.toList());
-    FileStatus baseFileStatus = getFileStatusUnchecked(baseFile);
-    try {
-      RealtimeFileStatus rtFileStatus = new RealtimeFileStatus(baseFileStatus);
-      rtFileStatus.setDeltaLogFiles(sortedLogFiles);
-      rtFileStatus.setBaseFilePath(baseFile.getPath());
-      if (baseFileStatus instanceof LocatedFileStatusWithBootstrapBaseFile || baseFileStatus instanceof FileStatusWithBootstrapBaseFile) {
-        rtFileStatus.setBootStrapFileStatus(baseFileStatus);
-      }
-
-      return rtFileStatus;
-    } catch (IOException e) {
-      throw new HoodieIOException(String.format("Failed to init %s", RealtimeFileStatus.class.getSimpleName()), e);
-    }
-  }
-
-  @Override
-  public final Configuration getConf() {
-    return conf;
-  }
-
-  @Override
-  public final void setConf(Configuration conf) {
-    this.conf = conf;
-  }
+public class HoodieCopyOnWriteTableInputFormat extends HoodieTableInputFormat {
 
   @Override
   protected boolean isSplitable(FileSystem fs, Path filename) {
@@ -178,10 +147,6 @@ public class HoodieCopyOnWriteTableInputFormat extends FileInputFormat<NullWrita
     throw new UnsupportedEncodingException("not implemented");
   }
 
-  protected boolean includeLogFilesForSnapshotView() {
-    return false;
-  }
-
   /**
    * Abstracts and exposes {@link FileInputFormat#listStatus(JobConf)} operation to subclasses that
    * lists files (returning an array of {@link FileStatus}) corresponding to the input paths specified
@@ -219,6 +184,16 @@ public class HoodieCopyOnWriteTableInputFormat extends FileInputFormat<NullWrita
     return HoodieInputFormatUtils.filterIncrementalFileStatus(jobContext, tableMetaClient, timeline.get(), fileStatuses, commitsToCheck.get());
   }
 
+  protected FileStatus createFileStatusUnchecked(FileSlice fileSlice, HiveHoodieTableFileIndex fileIndex, Option<HoodieVirtualKeyInfo> virtualKeyInfoOpt) {
+    Option<HoodieBaseFile> baseFileOpt = fileSlice.getBaseFile();
+
+    if (baseFileOpt.isPresent()) {
+      return getFileStatusUnchecked(baseFileOpt.get());
+    } else {
+      throw new IllegalStateException("Invalid state: base-file has to be present");
+    }
+  }
+
   private BootstrapBaseFileSplit makeExternalFileSplit(PathWithBootstrapFileStatus file, FileSplit split) {
     try {
       LOG.info("Making external data split for " + file);
@@ -229,11 +204,6 @@ public class HoodieCopyOnWriteTableInputFormat extends FileInputFormat<NullWrita
     } catch (IOException e) {
       throw new HoodieIOException(e.getMessage(), e);
     }
-  }
-
-  @Nonnull
-  private List<FileStatus> listStatusForSnapshotModeLegacy(JobConf job, Map<String, HoodieTableMetaClient> tableMetaClientMap, List<Path> snapshotPaths) throws IOException {
-    return HoodieInputFormatUtils.filterFileStatusForSnapshotMode(job, tableMetaClientMap, snapshotPaths, includeLogFilesForSnapshotView());
   }
 
   @Nonnull
@@ -265,50 +235,23 @@ public class HoodieCopyOnWriteTableInputFormat extends FileInputFormat<NullWrita
               engineContext,
               tableMetaClient,
               props,
-              HoodieTableQueryType.QUERY_TYPE_SNAPSHOT,
+              HoodieTableQueryType.SNAPSHOT,
               partitionPaths,
               queryCommitInstant,
               shouldIncludePendingCommits);
 
-      Map<String, Seq<FileSlice>> partitionedFileSlices =
-          JavaConverters.mapAsJavaMapConverter(fileIndex.listFileSlices()).asJava();
+      Map<String, List<FileSlice>> partitionedFileSlices = fileIndex.listFileSlices();
+
+      Option<HoodieVirtualKeyInfo> virtualKeyInfoOpt = getHoodieVirtualKeyInfo(tableMetaClient);
 
       targetFiles.addAll(
           partitionedFileSlices.values()
               .stream()
-              .flatMap(seq -> JavaConverters.seqAsJavaListConverter(seq).asJava().stream())
-              .map(fileSlice -> {
-                Option<HoodieBaseFile> baseFileOpt = fileSlice.getBaseFile();
-                Option<HoodieLogFile> latestLogFileOpt = fileSlice.getLatestLogFile();
-                Stream<HoodieLogFile> logFiles = fileSlice.getLogFiles();
-
-                Option<HoodieInstant> latestCompletedInstantOpt =
-                    fromScala(fileIndex.latestCompletedInstant());
-
-                // Check if we're reading a MOR table
-                if (includeLogFilesForSnapshotView()) {
-                  if (baseFileOpt.isPresent()) {
-                    return createRealtimeFileStatusUnchecked(baseFileOpt.get(), logFiles, latestCompletedInstantOpt, tableMetaClient);
-                  } else if (latestLogFileOpt.isPresent()) {
-                    return createRealtimeFileStatusUnchecked(latestLogFileOpt.get(), logFiles, latestCompletedInstantOpt, tableMetaClient);
-                  } else {
-                    throw new IllegalStateException("Invalid state: either base-file or log-file has to be present");
-                  }
-                } else {
-                  if (baseFileOpt.isPresent()) {
-                    return getFileStatusUnchecked(baseFileOpt.get());
-                  } else {
-                    throw new IllegalStateException("Invalid state: base-file has to be present");
-                  }
-                }
-
-              })
+              .flatMap(Collection::stream)
+              .map(fileSlice -> createFileStatusUnchecked(fileSlice, fileIndex, virtualKeyInfoOpt))
               .collect(Collectors.toList())
       );
     }
-
-    // TODO cleanup
-    validate(targetFiles, listStatusForSnapshotModeLegacy(job, tableMetaClientMap, snapshotPaths));
 
     return targetFiles;
   }
@@ -319,7 +262,7 @@ public class HoodieCopyOnWriteTableInputFormat extends FileInputFormat<NullWrita
   }
 
   @Nonnull
-  private static FileStatus getFileStatusUnchecked(HoodieBaseFile baseFile) {
+  protected static FileStatus getFileStatusUnchecked(HoodieBaseFile baseFile) {
     try {
       return HoodieInputFormatUtils.getFileStatus(baseFile);
     } catch (IOException ioe) {
@@ -327,65 +270,23 @@ public class HoodieCopyOnWriteTableInputFormat extends FileInputFormat<NullWrita
     }
   }
 
-  @Nonnull
-  private static RealtimeFileStatus createRealtimeFileStatusUnchecked(HoodieBaseFile baseFile,
-                                                                      Stream<HoodieLogFile> logFiles,
-                                                                      Option<HoodieInstant> latestCompletedInstantOpt,
-                                                                      HoodieTableMetaClient tableMetaClient) {
-    List<HoodieLogFile> sortedLogFiles = logFiles.sorted(HoodieLogFile.getLogFileComparator()).collect(Collectors.toList());
-    FileStatus baseFileStatus = getFileStatusUnchecked(baseFile);
+  protected static Option<HoodieVirtualKeyInfo> getHoodieVirtualKeyInfo(HoodieTableMetaClient metaClient) {
+    HoodieTableConfig tableConfig = metaClient.getTableConfig();
+    if (tableConfig.populateMetaFields()) {
+      return Option.empty();
+    }
+
+    TableSchemaResolver tableSchemaResolver = new TableSchemaResolver(metaClient);
     try {
-      RealtimeFileStatus rtFileStatus = new RealtimeFileStatus(baseFileStatus);
-      rtFileStatus.setDeltaLogFiles(sortedLogFiles);
-      rtFileStatus.setBaseFilePath(baseFile.getPath());
-      rtFileStatus.setBasePath(tableMetaClient.getBasePath());
-
-      if (latestCompletedInstantOpt.isPresent()) {
-        HoodieInstant latestCompletedInstant = latestCompletedInstantOpt.get();
-        checkState(latestCompletedInstant.isCompleted());
-
-        rtFileStatus.setMaxCommitTime(latestCompletedInstant.getTimestamp());
-      }
-
-      if (baseFileStatus instanceof LocatedFileStatusWithBootstrapBaseFile || baseFileStatus instanceof FileStatusWithBootstrapBaseFile) {
-        rtFileStatus.setBootStrapFileStatus(baseFileStatus);
-      }
-
-      return rtFileStatus;
-    } catch (IOException e) {
-      throw new HoodieIOException(String.format("Failed to init %s", RealtimeFileStatus.class.getSimpleName()), e);
+      Schema schema = tableSchemaResolver.getTableAvroSchema();
+      return Option.of(
+          new HoodieVirtualKeyInfo(
+              tableConfig.getRecordKeyFieldProp(),
+              tableConfig.getPartitionFieldProp(),
+              schema.getField(tableConfig.getRecordKeyFieldProp()).pos(),
+              schema.getField(tableConfig.getPartitionFieldProp()).pos()));
+    } catch (Exception exception) {
+      throw new HoodieException("Fetching table schema failed with exception ", exception);
     }
-  }
-
-  @Nonnull
-  private static RealtimeFileStatus createRealtimeFileStatusUnchecked(HoodieLogFile latestLogFile,
-                                                                      Stream<HoodieLogFile> logFiles,
-                                                                      Option<HoodieInstant> latestCompletedInstantOpt,
-                                                                      HoodieTableMetaClient tableMetaClient) {
-    List<HoodieLogFile> sortedLogFiles = logFiles.sorted(HoodieLogFile.getLogFileComparator()).collect(Collectors.toList());
-    try {
-      RealtimeFileStatus rtFileStatus = new RealtimeFileStatus(latestLogFile.getFileStatus());
-      rtFileStatus.setDeltaLogFiles(sortedLogFiles);
-      rtFileStatus.setBasePath(tableMetaClient.getBasePath());
-
-      if (latestCompletedInstantOpt.isPresent()) {
-        HoodieInstant latestCompletedInstant = latestCompletedInstantOpt.get();
-        checkState(latestCompletedInstant.isCompleted());
-
-        rtFileStatus.setMaxCommitTime(latestCompletedInstant.getTimestamp());
-      }
-
-      return rtFileStatus;
-    } catch (IOException e) {
-      throw new HoodieIOException(String.format("Failed to init %s", RealtimeFileStatus.class.getSimpleName()), e);
-    }
-  }
-
-  private static Option<HoodieInstant> fromScala(scala.Option<HoodieInstant> opt) {
-    if (opt.isDefined()) {
-      return Option.of(opt.get());
-    }
-
-    return Option.empty();
   }
 }

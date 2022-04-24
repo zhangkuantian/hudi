@@ -21,7 +21,7 @@ package org.apache.hudi.table.action.compact;
 import org.apache.hudi.avro.model.HoodieCompactionPlan;
 import org.apache.hudi.client.SparkRDDWriteClient;
 import org.apache.hudi.client.WriteStatus;
-import org.apache.hudi.common.config.HoodieMetadataConfig;
+import org.apache.hudi.common.data.HoodieData;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.FileSlice;
 import org.apache.hudi.common.model.HoodieRecord;
@@ -159,7 +159,6 @@ public class TestHoodieCompactor extends HoodieClientTestHarness {
     // insert 100 records
     HoodieWriteConfig config = getConfigBuilder()
         .withCompactionConfig(HoodieCompactionConfig.newBuilder().withMaxNumDeltaCommitsBeforeCompaction(1).build())
-        .withMetadataConfig(HoodieMetadataConfig.newBuilder().enable(true).build())
         .build();
     try (SparkRDDWriteClient writeClient = getHoodieWriteClient(config)) {
       String newCommitTime = "100";
@@ -197,12 +196,12 @@ public class TestHoodieCompactor extends HoodieClientTestHarness {
       String compactionInstantTime = "102";
       table.scheduleCompaction(context, compactionInstantTime, Option.empty());
       table.getMetaClient().reloadActiveTimeline();
-      JavaRDD<WriteStatus> result = (JavaRDD<WriteStatus>) table.compact(
+      HoodieData<WriteStatus> result = (HoodieData<WriteStatus>) table.compact(
           context, compactionInstantTime).getWriteStatuses();
 
       // Verify that all partition paths are present in the WriteStatus result
       for (String partitionPath : dataGen.getPartitionPaths()) {
-        List<WriteStatus> writeStatuses = result.collect();
+        List<WriteStatus> writeStatuses = result.collectAsList();
         assertTrue(writeStatuses.stream()
             .filter(writeStatus -> writeStatus.getStat().getPartitionPath().contentEquals(partitionPath)).count() > 0);
       }
