@@ -53,7 +53,7 @@ object HoodieSqlCommonUtils extends SparkAdapterSupport {
 
   def getTableIdentifier(table: LogicalPlan): TableIdentifier = {
     table match {
-      case SubqueryAlias(name, _) => sparkAdapter.toTableIdentifier(name)
+      case SubqueryAlias(name, _) => sparkAdapter.getCatalystPlanUtils.toTableIdentifier(name)
       case _ => throw new IllegalArgumentException(s"Illegal table: $table")
     }
   }
@@ -253,8 +253,11 @@ object HoodieSqlCommonUtils extends SparkAdapterSupport {
         .filterKeys(_.startsWith("hoodie."))
   }
 
-  def isEnableHive(sparkSession: SparkSession): Boolean =
-    "hive" == sparkSession.sessionState.conf.getConf(StaticSQLConf.CATALOG_IMPLEMENTATION)
+  /**
+   * Checks whether Spark is using Hive as Session's Catalog
+   */
+  def isUsingHiveCatalog(sparkSession: SparkSession): Boolean =
+    sparkSession.sessionState.conf.getConf(StaticSQLConf.CATALOG_IMPLEMENTATION) == "hive"
 
   /**
    * Convert different query instant time format to the commit time format.

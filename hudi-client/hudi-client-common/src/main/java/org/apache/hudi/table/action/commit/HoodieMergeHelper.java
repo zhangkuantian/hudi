@@ -100,7 +100,7 @@ public class HoodieMergeHelper<T extends HoodieRecordPayload> extends
     // TODO support bootstrap
     if (querySchemaOpt.isPresent() && !baseFile.getBootstrapBaseFile().isPresent()) {
       // check implicitly add columns, and position reorder(spark sql may change cols order)
-      InternalSchema querySchema = AvroSchemaEvolutionUtils.evolveSchemaFromNewAvroSchema(readSchema, querySchemaOpt.get(), true);
+      InternalSchema querySchema = AvroSchemaEvolutionUtils.reconcileSchema(readSchema, querySchemaOpt.get());
       long commitInstantTime = Long.valueOf(FSUtils.getCommitTime(mergeHandle.getOldFilePath().getName()));
       InternalSchema writeInternalSchema = InternalSchemaCache.searchSchemaAndCache(commitInstantTime, table.getMetaClient(), table.getConfig().getInternalSchemaCacheEnable());
       if (writeInternalSchema.isEmptySchema()) {
@@ -148,13 +148,16 @@ public class HoodieMergeHelper<T extends HoodieRecordPayload> extends
     } catch (Exception e) {
       throw new HoodieException(e);
     } finally {
+      // HUDI-2875: mergeHandle is not thread safe, we should totally terminate record inputting
+      // and executor firstly and then close mergeHandle.
       if (reader != null) {
         reader.close();
       }
-      mergeHandle.close();
       if (null != wrapper) {
         wrapper.shutdownNow();
+        wrapper.awaitTermination();
       }
+      mergeHandle.close();
     }
   }
 }

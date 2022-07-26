@@ -19,15 +19,11 @@ package org.apache.spark.sql.adapter
 
 import org.apache.avro.Schema
 import org.apache.spark.sql.avro._
-import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.parser.ParserInterface
-import org.apache.spark.sql.catalyst.plans.logical._
-import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, Spark32HoodieParquetFileFormat}
 import org.apache.spark.sql.parser.HoodieSpark3_2ExtendedSqlParser
 import org.apache.spark.sql.types.DataType
-import org.apache.spark.sql.{HoodieCatalystExpressionUtils, HoodieSpark3_2CatalystExpressionUtils, SparkSession}
+import org.apache.spark.sql._
 
 /**
  * Implementation of [[SparkAdapter]] for Spark 3.2.x branch
@@ -40,44 +36,14 @@ class Spark3_2Adapter extends BaseSpark3Adapter {
   override def createAvroDeserializer(rootAvroType: Schema, rootCatalystType: DataType): HoodieAvroDeserializer =
     new HoodieSpark3_2AvroDeserializer(rootAvroType, rootCatalystType)
 
-  override def createCatalystExpressionUtils(): HoodieCatalystExpressionUtils = HoodieSpark3_2CatalystExpressionUtils
+  override def getCatalystExpressionUtils: HoodieCatalystExpressionUtils = HoodieSpark32CatalystExpressionUtils
 
-  /**
-   * if the logical plan is a TimeTravelRelation LogicalPlan.
-   */
-  override def isRelationTimeTravel(plan: LogicalPlan): Boolean = {
-    plan.isInstanceOf[TimeTravelRelation]
-  }
-
-  /**
-   * Get the member of the TimeTravelRelation LogicalPlan.
-   */
-  override def getRelationTimeTravel(plan: LogicalPlan): Option[(LogicalPlan, Option[Expression], Option[String])] = {
-    plan match {
-      case timeTravel: TimeTravelRelation =>
-        Some((timeTravel.table, timeTravel.timestamp, timeTravel.version))
-      case _ =>
-        None
-    }
-  }
+  override def getCatalystPlanUtils: HoodieCatalystPlansUtils = HoodieSpark32CatalystPlanUtils
 
   override def createExtendedSparkParser: Option[(SparkSession, ParserInterface) => ParserInterface] = {
     Some(
       (spark: SparkSession, delegate: ParserInterface) => new HoodieSpark3_2ExtendedSqlParser(spark, delegate)
     )
-  }
-
-  override def createResolveHudiAlterTableCommand(sparkSession: SparkSession): Rule[LogicalPlan] = {
-    if (SPARK_VERSION.startsWith("3.2")) {
-      val loadClassName = "org.apache.spark.sql.hudi.ResolveHudiAlterTableCommandSpark32"
-      val clazz = Class.forName(loadClassName, true, Thread.currentThread().getContextClassLoader)
-      val ctor = clazz.getConstructors.head
-      ctor.newInstance(sparkSession).asInstanceOf[Rule[LogicalPlan]]
-    } else {
-      new Rule[LogicalPlan] {
-        override def apply(plan: LogicalPlan): LogicalPlan = plan
-      }
-    }
   }
 
   override def createHoodieParquetFileFormat(appendPartitionValues: Boolean): Option[ParquetFileFormat] = {

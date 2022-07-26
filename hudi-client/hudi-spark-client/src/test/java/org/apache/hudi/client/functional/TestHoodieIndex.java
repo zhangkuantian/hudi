@@ -79,7 +79,6 @@ import scala.Tuple2;
 
 import static org.apache.hudi.common.testutils.SchemaTestUtil.getSchemaFromResource;
 import static org.apache.hudi.metadata.HoodieTableMetadataUtil.deleteMetadataPartition;
-import static org.apache.hudi.metadata.HoodieTableMetadataUtil.getCompletedMetadataPartitions;
 import static org.apache.hudi.metadata.HoodieTableMetadataUtil.metadataPartitionExists;
 import static org.apache.hudi.metadata.MetadataPartitionType.COLUMN_STATS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -131,6 +130,9 @@ public class TestHoodieIndex extends TestHoodieMetadataBase {
     HoodieIndexConfig.Builder indexBuilder = HoodieIndexConfig.newBuilder().withIndexType(indexType)
         .fromProperties(populateMetaFields ? new Properties() : getPropertiesForKeyGen())
         .withIndexType(indexType);
+    if (indexType == IndexType.BUCKET) {
+      indexBuilder.withBucketIndexEngineType(HoodieIndex.BucketIndexEngineType.SIMPLE);
+    }
     config = getConfigBuilder()
         .withProperties(populateMetaFields ? new Properties() : getPropertiesForKeyGen())
         .withRollbackUsingMarkers(rollbackUsingMarkers)
@@ -231,7 +233,7 @@ public class TestHoodieIndex extends TestHoodieMetadataBase {
     // check column_stats partition exists
     metaClient = HoodieTableMetaClient.reload(metaClient);
     assertTrue(metadataPartitionExists(metaClient.getBasePath(), context, COLUMN_STATS));
-    assertTrue(getCompletedMetadataPartitions(metaClient.getTableConfig()).contains(COLUMN_STATS.getPartitionPath()));
+    assertTrue(metaClient.getTableConfig().getMetadataPartitions().contains(COLUMN_STATS.getPartitionPath()));
 
     // delete the column_stats partition
     deleteMetadataPartition(metaClient.getBasePath(), context, COLUMN_STATS);

@@ -21,13 +21,13 @@ import com.google.common.collect.ImmutableList
 import org.apache.hudi.HoodieSparkUtils
 import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.catalyst.plans.logical.{CallCommand, NamedArgument, PositionalArgument}
-import org.apache.spark.sql.hudi.TestHoodieSqlBase
+import org.apache.spark.sql.hudi.HoodieSparkSqlTestBase
 import org.apache.spark.sql.types.{DataType, DataTypes}
 
 import java.math.BigDecimal
 import scala.collection.JavaConverters
 
-class TestCallCommandParser extends TestHoodieSqlBase {
+class TestCallCommandParser extends HoodieSparkSqlTestBase {
   private val parser = spark.sessionState.sqlParser
 
   test("Test Call Produce with Positional Arguments") {
@@ -83,6 +83,26 @@ class TestCallCommandParser extends TestHoodieSqlBase {
 
   test("Test Call Parse Error") {
     checkParseExceptionContain("CALL cat.system radish kebab")("mismatched input 'CALL' expecting")
+  }
+
+  test("Test Call Produce with semicolon") {
+    val call = parser.parsePlan("CALL system.func(c1 => 1, c2 => '2', c3 => true)").asInstanceOf[CallCommand]
+    assertResult(ImmutableList.of("system", "func"))(JavaConverters.seqAsJavaListConverter(call.name).asJava)
+
+    assertResult(3)(call.args.size)
+
+    checkArg(call, 0, "c1", 1, DataTypes.IntegerType)
+    checkArg(call, 1, "c2", "2", DataTypes.StringType)
+    checkArg(call, 2, "c3", true, DataTypes.BooleanType)
+
+    val call2 = parser.parsePlan("CALL system.func2(c1 => 1, c2 => '2', c3 => true);").asInstanceOf[CallCommand]
+    assertResult(ImmutableList.of("system", "func2"))(JavaConverters.seqAsJavaListConverter(call2.name).asJava)
+
+    assertResult(3)(call2.args.size)
+
+    checkArg(call2, 0, "c1", 1, DataTypes.IntegerType)
+    checkArg(call2, 1, "c2", "2", DataTypes.StringType)
+    checkArg(call2, 2, "c3", true, DataTypes.BooleanType)
   }
 
   protected def checkParseExceptionContain(sql: String)(errorMsg: String): Unit = {

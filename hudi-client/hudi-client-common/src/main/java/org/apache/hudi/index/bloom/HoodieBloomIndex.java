@@ -40,7 +40,6 @@ import org.apache.hudi.index.HoodieIndex;
 import org.apache.hudi.index.HoodieIndexUtils;
 import org.apache.hudi.io.HoodieRangeInfoHandle;
 import org.apache.hudi.table.HoodieTable;
-
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
 
@@ -56,7 +55,6 @@ import static java.util.stream.Collectors.toList;
 import static org.apache.hudi.common.util.CollectionUtils.isNullOrEmpty;
 import static org.apache.hudi.index.HoodieIndexUtils.getLatestBaseFilesForAllPartitions;
 import static org.apache.hudi.metadata.HoodieMetadataPayload.unwrapStatisticValueWrapper;
-import static org.apache.hudi.metadata.HoodieTableMetadataUtil.getCompletedMetadataPartitions;
 import static org.apache.hudi.metadata.MetadataPartitionType.COLUMN_STATS;
 
 /**
@@ -143,7 +141,7 @@ public class HoodieBloomIndex extends HoodieIndex<Object, Object> {
     if (config.getBloomIndexPruneByRanges()) {
       // load column ranges from metadata index if column stats index is enabled and column_stats metadata partition is available
       if (config.getBloomIndexUseMetadata()
-          && getCompletedMetadataPartitions(hoodieTable.getMetaClient().getTableConfig()).contains(COLUMN_STATS.getPartitionPath())) {
+          && hoodieTable.getMetaClient().getTableConfig().getMetadataPartitions().contains(COLUMN_STATS.getPartitionPath())) {
         fileInfoList = loadColumnRangesFromMetaIndex(affectedPartitionPathList, context, hoodieTable);
       }
       // fallback to loading column ranges from files
@@ -167,7 +165,7 @@ public class HoodieBloomIndex extends HoodieIndex<Object, Object> {
         .map(pair -> Pair.of(pair.getKey(), pair.getValue().getFileId()))
         .collect(toList());
 
-    context.setJobStatus(this.getClass().getName(), "Obtain key ranges for file slices (range pruning=on)");
+    context.setJobStatus(this.getClass().getName(), "Obtain key ranges for file slices (range pruning=on): " + config.getTableName());
     return context.map(partitionPathFileIDList, pf -> {
       try {
         HoodieRangeInfoHandle rangeInfoHandle = new HoodieRangeInfoHandle(config, hoodieTable, pf);
@@ -209,7 +207,7 @@ public class HoodieBloomIndex extends HoodieIndex<Object, Object> {
   protected List<Pair<String, BloomIndexFileInfo>> loadColumnRangesFromMetaIndex(
       List<String> partitions, final HoodieEngineContext context, final HoodieTable<?, ?, ?, ?> hoodieTable) {
     // also obtain file ranges, if range pruning is enabled
-    context.setJobStatus(this.getClass().getName(), "Load meta index key ranges for file slices");
+    context.setJobStatus(this.getClass().getName(), "Load meta index key ranges for file slices: " + config.getTableName());
 
     final String keyField = hoodieTable.getMetaClient().getTableConfig().getRecordKeyFieldProp();
     return context.flatMap(partitions, partitionName -> {

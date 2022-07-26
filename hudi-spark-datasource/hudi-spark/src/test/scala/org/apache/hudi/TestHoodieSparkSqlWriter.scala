@@ -20,7 +20,6 @@ package org.apache.hudi
 import java.io.IOException
 import java.time.Instant
 import java.util.{Collections, Date, UUID}
-
 import org.apache.commons.io.FileUtils
 import org.apache.hudi.DataSourceWriteOptions._
 import org.apache.hudi.client.SparkRDDWriteClient
@@ -168,13 +167,20 @@ class TestHoodieSparkSqlWriter {
    * @param sortMode           Bulk insert sort mode
    * @param populateMetaFields Flag for populating meta fields
    */
-  def testBulkInsertWithSortMode(sortMode: BulkInsertSortMode, populateMetaFields: Boolean = true): Unit = {
+  def testBulkInsertWithSortMode(sortMode: BulkInsertSortMode, populateMetaFields: Boolean = true, enableOCCConfigs: Boolean = false): Unit = {
     //create a new table
-    val fooTableModifier = commonTableModifier.updated("hoodie.bulkinsert.shuffle.parallelism", "4")
+    var fooTableModifier = commonTableModifier.updated("hoodie.bulkinsert.shuffle.parallelism", "4")
       .updated(DataSourceWriteOptions.OPERATION.key, DataSourceWriteOptions.BULK_INSERT_OPERATION_OPT_VAL)
       .updated(DataSourceWriteOptions.ENABLE_ROW_WRITER.key, "true")
       .updated(HoodieTableConfig.POPULATE_META_FIELDS.key(), String.valueOf(populateMetaFields))
       .updated(HoodieWriteConfig.BULK_INSERT_SORT_MODE.key(), sortMode.name())
+
+    if (enableOCCConfigs) {
+      fooTableModifier = fooTableModifier
+        .updated("hoodie.write.concurrency.mode","optimistic_concurrency_control")
+        .updated("hoodie.cleaner.policy.failed.writes","LAZY")
+        .updated("hoodie.write.lock.provider","org.apache.hudi.client.transaction.lock.InProcessLockProvider")
+    }
 
     // generate the inserts
     val schema = DataSourceTestUtils.getStructTypeExampleSchema
@@ -274,6 +280,29 @@ class TestHoodieSparkSqlWriter {
   }
 
   /**
+    * Test case for Do not validate table config if save mode is set to Overwrite
+    */
+  @Test
+  def testValidateTableConfigWithOverwriteSaveMode(): Unit = {
+    //create a new table
+    val tableModifier1 = Map("path" -> tempBasePath, HoodieWriteConfig.TBL_NAME.key -> hoodieFooTableName,
+      "hoodie.datasource.write.recordkey.field" -> "uuid")
+    val dataFrame = spark.createDataFrame(Seq(StringLongTest(UUID.randomUUID().toString, new Date().getTime)))
+    HoodieSparkSqlWriter.write(sqlContext, SaveMode.Overwrite, tableModifier1, dataFrame)
+
+    //on same path try write with different RECORDKEY_FIELD_NAME and Append SaveMode should throw an exception
+    val tableModifier2 = Map("path" -> tempBasePath, HoodieWriteConfig.TBL_NAME.key -> hoodieFooTableName,
+      "hoodie.datasource.write.recordkey.field" -> "ts")
+    val dataFrame2 = spark.createDataFrame(Seq(StringLongTest(UUID.randomUUID().toString, new Date().getTime)))
+    val hoodieException = intercept[HoodieException](HoodieSparkSqlWriter.write(sqlContext, SaveMode.Append, tableModifier2, dataFrame2))
+    assert(hoodieException.getMessage.contains("Config conflict"))
+    assert(hoodieException.getMessage.contains(s"RecordKey:\tts\tuuid"))
+
+    //on same path try write with different RECORDKEY_FIELD_NAME and Overwrite SaveMode should be successful.
+    assert(HoodieSparkSqlWriter.write(sqlContext, SaveMode.Overwrite, tableModifier2, dataFrame2)._1)
+  }
+
+  /**
    * Test case for each bulk insert sort mode
    *
    * @param sortMode Bulk insert sort mode
@@ -282,6 +311,11 @@ class TestHoodieSparkSqlWriter {
   @EnumSource(value = classOf[BulkInsertSortMode])
   def testBulkInsertForSortMode(sortMode: BulkInsertSortMode): Unit = {
     testBulkInsertWithSortMode(sortMode, populateMetaFields = true)
+  }
+
+  @Test
+  def testBulkInsertForSortModeWithOCC(): Unit = {
+    testBulkInsertWithSortMode(BulkInsertSortMode.GLOBAL_SORT, populateMetaFields = true, true)
   }
 
   /**
