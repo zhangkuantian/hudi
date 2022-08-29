@@ -116,10 +116,6 @@ public class StreamerUtil {
         new Path(cfg.propsFilePath), cfg.configs).getProps();
   }
 
-  public static Schema getSourceSchema(FlinkStreamerConfig cfg) {
-    return new FilebasedSchemaProvider(FlinkStreamerConfig.toFlinkConfig(cfg)).getSourceSchema();
-  }
-
   public static Schema getSourceSchema(org.apache.flink.configuration.Configuration conf) {
     if (conf.getOptional(FlinkOptions.SOURCE_AVRO_SCHEMA_PATH).isPresent()) {
       return new FilebasedSchemaProvider(conf).getSourceSchema();
@@ -433,11 +429,6 @@ public class StreamerUtil {
         .withRemoteServerHost(viewStorageConfig.getRemoteViewServerHost())
         .withRemoteServerPort(viewStorageConfig.getRemoteViewServerPort())
         .withRemoteTimelineClientTimeoutSecs(viewStorageConfig.getRemoteTimelineClientTimeoutSecs())
-        .withRemoteTimelineClientRetry(viewStorageConfig.isRemoteTimelineClientRetryEnabled())
-        .withRemoteTimelineClientMaxRetryNumbers(viewStorageConfig.getRemoteTimelineClientMaxRetryNumbers())
-        .withRemoteTimelineInitialRetryIntervalMs(viewStorageConfig.getRemoteTimelineInitialRetryIntervalMs())
-        .withRemoteTimelineClientMaxRetryIntervalMs(viewStorageConfig.getRemoteTimelineClientMaxRetryIntervalMs())
-        .withRemoteTimelineClientRetryExceptions(viewStorageConfig.getRemoteTimelineClientRetryExceptions())
         .build();
     ViewStorageProperties.createProperties(conf.getString(FlinkOptions.PATH), rebuilt, conf);
     return writeClient;
