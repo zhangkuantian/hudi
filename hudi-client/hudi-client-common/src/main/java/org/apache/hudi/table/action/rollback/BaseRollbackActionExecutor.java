@@ -100,13 +100,11 @@ public abstract class BaseRollbackActionExecutor<T extends HoodieRecordPayload, 
   private HoodieRollbackMetadata runRollback(HoodieTable<T, I, K, O> table, HoodieInstant rollbackInstant, HoodieRollbackPlan rollbackPlan) {
     ValidationUtils.checkArgument(rollbackInstant.getState().equals(HoodieInstant.State.REQUESTED)
         || rollbackInstant.getState().equals(HoodieInstant.State.INFLIGHT));
-    final HoodieTimer timer = new HoodieTimer();
-    timer.startTimer();
     final HoodieInstant inflightInstant = rollbackInstant.isRequested()
         ? table.getActiveTimeline().transitionRollbackRequestedToInflight(rollbackInstant)
         : rollbackInstant;
 
-    HoodieTimer rollbackTimer = new HoodieTimer().startTimer();
+    HoodieTimer rollbackTimer = HoodieTimer.start();
     List<HoodieRollbackStat> stats = doRollbackAndGetStats(rollbackPlan);
     HoodieRollbackMetadata rollbackMetadata = TimelineMetadataUtils.convertRollbackMetadata(
         instantTime,

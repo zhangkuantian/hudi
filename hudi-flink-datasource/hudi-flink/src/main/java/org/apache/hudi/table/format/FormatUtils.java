@@ -26,13 +26,16 @@ import org.apache.hudi.common.table.log.HoodieUnMergedLogRecordScanner;
 import org.apache.hudi.common.util.DefaultSizeEstimator;
 import org.apache.hudi.common.util.Functions;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.collection.ExternalSpillableMap;
 import org.apache.hudi.common.util.queue.BoundedInMemoryExecutor;
-import org.apache.hudi.common.util.queue.BoundedInMemoryQueueProducer;
+import org.apache.hudi.common.util.queue.HoodieProducer;
 import org.apache.hudi.common.util.queue.FunctionBasedQueueProducer;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.configuration.FlinkOptions;
+import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.hadoop.config.HoodieRealtimeConfig;
 import org.apache.hudi.table.format.mor.MergeOnReadInputSplit;
+import org.apache.hudi.util.FlinkWriteClients;
 import org.apache.hudi.util.StreamerUtil;
 
 import org.apache.avro.Schema;
@@ -44,6 +47,7 @@ import org.apache.flink.types.RowKind;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -118,12 +122,29 @@ public class FormatUtils {
     return pos == -1 ? null : record.get(pos);
   }
 
+  public static ExternalSpillableMap<String, byte[]> spillableMap(
+      HoodieWriteConfig writeConfig,
+      long maxCompactionMemoryInBytes) {
+    try {
+      return new ExternalSpillableMap<>(
+          maxCompactionMemoryInBytes,
+          writeConfig.getSpillableMapBasePath(),
+          new DefaultSizeEstimator<>(),
+          new DefaultSizeEstimator<>(),
+          writeConfig.getCommonConfig().getSpillableDiskMapType(),
+          writeConfig.getCommonConfig().isBitCaskDiskMapCompressionEnabled());
+    } catch (IOException e) {
+      throw new HoodieIOException(
+          "IOException when creating ExternalSpillableMap at " + writeConfig.getSpillableMapBasePath(), e);
+    }
+  }
+
   public static HoodieMergedLogRecordScanner logScanner(
       MergeOnReadInputSplit split,
       Schema logSchema,
       org.apache.flink.configuration.Configuration flinkConf,
       Configuration hadoopConf) {
-    HoodieWriteConfig writeConfig = StreamerUtil.getHoodieClientConfig(flinkConf);
+    HoodieWriteConfig writeConfig = FlinkWriteClients.getHoodieClientConfig(flinkConf);
     FileSystem fs = FSUtils.getFs(split.getTablePath(), hadoopConf);
     return HoodieMergedLogRecordScanner.newBuilder()
         .withFileSystem(fs)
@@ -209,8 +230,8 @@ public class FormatUtils {
     /**
      * Setup log and parquet reading in parallel. Both write to central buffer.
      */
-    private List<BoundedInMemoryQueueProducer<HoodieRecord<?>>> getParallelProducers() {
-      List<BoundedInMemoryQueueProducer<HoodieRecord<?>>> producers = new ArrayList<>();
+    private List<HoodieProducer<HoodieRecord<?>>> getParallelProducers() {
+      List<HoodieProducer<HoodieRecord<?>>> producers = new ArrayList<>();
       producers.add(new FunctionBasedQueueProducer<>(buffer -> {
         scanner.scan();
         return null;

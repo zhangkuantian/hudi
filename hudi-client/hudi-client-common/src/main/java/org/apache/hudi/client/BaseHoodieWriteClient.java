@@ -18,6 +18,10 @@
 
 package org.apache.hudi.client;
 
+import com.codahale.metrics.Timer;
+import org.apache.avro.Schema;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
 import org.apache.hudi.async.AsyncArchiveService;
 import org.apache.hudi.async.AsyncCleanerService;
 import org.apache.hudi.avro.HoodieAvroUtils;
@@ -94,11 +98,6 @@ import org.apache.hudi.table.action.savepoint.SavepointHelpers;
 import org.apache.hudi.table.marker.WriteMarkersFactory;
 import org.apache.hudi.table.upgrade.SupportsUpgradeDowngrade;
 import org.apache.hudi.table.upgrade.UpgradeDowngrade;
-
-import com.codahale.metrics.Timer;
-import org.apache.avro.Schema;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.Path;
 import org.apache.log4j.LogManager;
 import org.apache.log4j.Logger;
 
@@ -114,6 +113,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static org.apache.hudi.avro.AvroSchemaUtils.getAvroRecordQualifiedName;
 import static org.apache.hudi.common.model.HoodieCommitMetadata.SCHEMA_KEY;
 
 /**
@@ -141,6 +141,7 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
   protected transient Timer.Context writeTimer = null;
   protected transient Timer.Context compactionTimer;
   protected transient Timer.Context clusteringTimer;
+  protected transient Timer.Context logCompactionTimer;
 
   protected transient AsyncCleanerService asyncCleanerService;
   protected transient AsyncArchiveService asyncArchiveService;
@@ -279,7 +280,7 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
     FileBasedInternalSchemaStorageManager schemasManager = new FileBasedInternalSchemaStorageManager(table.getMetaClient());
     if (!historySchemaStr.isEmpty() || Boolean.parseBoolean(config.getString(HoodieCommonConfig.RECONCILE_SCHEMA.key()))) {
       InternalSchema internalSchema;
-      Schema avroSchema = HoodieAvroUtils.createHoodieWriteSchema(new Schema.Parser().parse(config.getSchema()));
+      Schema avroSchema = HoodieAvroUtils.createHoodieWriteSchema(config.getSchema(), config.allowOperationMetadataField());
       if (historySchemaStr.isEmpty()) {
         internalSchema = AvroInternalSchemaConverter.convert(avroSchema);
         internalSchema.setSchemaId(Long.parseLong(instantTime));
@@ -299,7 +300,7 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
         schemasManager.persistHistorySchemaStr(instantTime, SerDeHelper.inheritSchemas(evolvedSchema, historySchemaStr));
       }
       // update SCHEMA_KEY
-      metadata.addMetadata(SCHEMA_KEY, AvroInternalSchemaConverter.convert(evolvedSchema, avroSchema.getName()).toString());
+      metadata.addMetadata(SCHEMA_KEY, AvroInternalSchemaConverter.convert(evolvedSchema, avroSchema.getFullName()).toString());
     }
   }
 
@@ -366,7 +367,7 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
   protected void rollbackFailedBootstrap() {
     LOG.info("Rolling back pending bootstrap if present");
     HoodieTable<T, I, K, O> table = createTable(config, hadoopConf);
-    HoodieTimeline inflightTimeline = table.getMetaClient().getCommitsTimeline().filterPendingExcludingCompaction();
+    HoodieTimeline inflightTimeline = table.getMetaClient().getCommitsTimeline().filterPendingExcludingMajorAndMinorCompaction();
     Option<String> instant = Option.fromJavaOptional(
         inflightTimeline.getReverseOrderedInstants().map(HoodieInstant::getTimestamp).findFirst());
     if (instant.isPresent() && HoodieTimeline.compareTimestamps(instant.get(), HoodieTimeline.LESSER_THAN_OR_EQUALS,
@@ -491,7 +492,8 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
   public void preWrite(String instantTime, WriteOperationType writeOperationType,
       HoodieTableMetaClient metaClient) {
     setOperationType(writeOperationType);
-    this.lastCompletedTxnAndMetadata = TransactionUtils.getLastCompletedTxnInstantAndMetadata(metaClient);
+    this.lastCompletedTxnAndMetadata = txnManager.isOptimisticConcurrencyControlEnabled()
+        ? TransactionUtils.getLastCompletedTxnInstantAndMetadata(metaClient) : Option.empty();
     this.pendingInflightAndRequestedInstants = TransactionUtils.getInflightAndRequestedInstants(metaClient);
     this.pendingInflightAndRequestedInstants.remove(instantTime);
     if (null == this.asyncCleanerService) {
@@ -562,6 +564,15 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
         inlineScheduleCompaction(extraMetadata);
       }
 
+      // Do an inline log compaction if enabled
+      if (config.inlineLogCompactionEnabled()) {
+        runAnyPendingLogCompactions(table);
+        metadata.addMetadata(HoodieCompactionConfig.INLINE_LOG_COMPACT.key(), "true");
+        inlineLogCompact(extraMetadata);
+      } else {
+        metadata.addMetadata(HoodieCompactionConfig.INLINE_LOG_COMPACT.key(), "false");
+      }
+
       // Do an inline clustering if enabled
       if (config.inlineClusteringEnabled()) {
         runAnyPendingClustering(table);
@@ -586,6 +597,14 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
         .forEach(instant -> {
           LOG.info("Running previously failed inflight compaction at instant " + instant);
           compact(instant.getTimestamp(), true);
+        });
+  }
+
+  protected void runAnyPendingLogCompactions(HoodieTable table) {
+    table.getActiveTimeline().getWriteTimeline().filterPendingLogCompactionTimeline().getInstants()
+        .forEach(instant -> {
+          LOG.info("Running previously failed inflight log compaction at instant " + instant);
+          logCompact(instant.getTimestamp(), true);
         });
   }
 
@@ -857,7 +876,6 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
     CleanerUtils.rollbackFailedWrites(config.getFailedWritesCleanPolicy(),
         HoodieTimeline.CLEAN_ACTION, () -> rollbackFailedWrites(skipLocking));
 
-    HoodieCleanMetadata metadata = null;
     HoodieTable table = createTable(config, hadoopConf);
     if (config.allowMultipleCleans() || !table.getActiveTimeline().getCleanerTimeline().filterInflightsAndRequested().firstInstant().isPresent()) {
       LOG.info("Cleaner started");
@@ -866,15 +884,16 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
         scheduleTableServiceInternal(cleanInstantTime, Option.empty(), TableServiceType.CLEAN);
         table.getMetaClient().reloadActiveTimeline();
       }
+    }
 
-      metadata = table.clean(context, cleanInstantTime, skipLocking);
-      if (timerContext != null && metadata != null) {
-        long durationMs = metrics.getDurationInMs(timerContext.stop());
-        metrics.updateCleanMetrics(durationMs, metadata.getTotalFilesDeleted());
-        LOG.info("Cleaned " + metadata.getTotalFilesDeleted() + " files"
-            + " Earliest Retained Instant :" + metadata.getEarliestCommitToRetain()
-            + " cleanerElapsedMs" + durationMs);
-      }
+    // Proceeds to execute any requested or inflight clean instances in the timeline
+    HoodieCleanMetadata metadata = table.clean(context, cleanInstantTime, skipLocking);
+    if (timerContext != null && metadata != null) {
+      long durationMs = metrics.getDurationInMs(timerContext.stop());
+      metrics.updateCleanMetrics(durationMs, metadata.getTotalFilesDeleted());
+      LOG.info("Cleaned " + metadata.getTotalFilesDeleted() + " files"
+          + " Earliest Retained Instant :" + metadata.getEarliestCommitToRetain()
+          + " cleanerElapsedMs" + durationMs);
     }
     return metadata;
   }
@@ -1078,12 +1097,59 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
   protected abstract void completeCompaction(HoodieCommitMetadata metadata, HoodieTable table, String compactionCommitTime);
 
   /**
+   * Schedules a new log compaction instant.
+   * @param extraMetadata Extra Metadata to be stored
+   */
+  public Option<String> scheduleLogCompaction(Option<Map<String, String>> extraMetadata) throws HoodieIOException {
+    String instantTime = HoodieActiveTimeline.createNewInstantTime();
+    return scheduleLogCompactionAtInstant(instantTime, extraMetadata) ? Option.of(instantTime) : Option.empty();
+  }
+
+  /**
+   * Schedules a new log compaction instant with passed-in instant time.
+   * @param instantTime Log Compaction Instant Time
+   * @param extraMetadata Extra Metadata to be stored
+   */
+  public boolean scheduleLogCompactionAtInstant(String instantTime, Option<Map<String, String>> extraMetadata) throws HoodieIOException {
+    return scheduleTableService(instantTime, extraMetadata, TableServiceType.LOG_COMPACT).isPresent();
+  }
+
+  /**
+   * Performs Log Compaction for the workload stored in instant-time.
+   *
+   * @param logCompactionInstantTime Log Compaction Instant Time
+   * @return Collection of WriteStatus to inspect errors and counts
+   */
+  public HoodieWriteMetadata<O> logCompact(String logCompactionInstantTime) {
+    return logCompact(logCompactionInstantTime, config.shouldAutoCommit());
+  }
+
+  /**
+   * Commit a log compaction operation. Allow passing additional meta-data to be stored in commit instant file.
+   *
+   * @param logCompactionInstantTime Log Compaction Instant Time
+   * @param metadata All the metadata that gets stored along with a commit
+   * @param extraMetadata Extra Metadata to be stored
+   */
+  public void commitLogCompaction(String logCompactionInstantTime, HoodieCommitMetadata metadata,
+                                  Option<Map<String, String>> extraMetadata) {
+    throw new UnsupportedOperationException("Log compaction is not supported yet.");
+  }
+
+  /**
+   * Commit Log Compaction and track metrics.
+   */
+  protected void completeLogCompaction(HoodieCommitMetadata metadata, HoodieTable<T, I, K, O> table, String logCompactionCommitTime) {
+    throw new UnsupportedOperationException("Log compaction is not supported yet.");
+  }
+
+  /**
    * Get inflight time line exclude compaction and clustering.
    * @param metaClient
    * @return
    */
   private HoodieTimeline getInflightTimelineExcludeCompactionAndClustering(HoodieTableMetaClient metaClient) {
-    HoodieTimeline inflightTimelineWithReplaceCommit = metaClient.getCommitsTimeline().filterPendingExcludingCompaction();
+    HoodieTimeline inflightTimelineWithReplaceCommit = metaClient.getCommitsTimeline().filterPendingExcludingMajorAndMinorCompaction();
     HoodieTimeline inflightTimelineExcludeClusteringCommit = inflightTimelineWithReplaceCommit.filter(instant -> {
       if (instant.getAction().equals(HoodieTimeline.REPLACE_COMMIT_ACTION)) {
         Option<Pair<HoodieInstant, HoodieClusteringPlan>> instantPlan = ClusteringUtils.getClusteringPlan(metaClient, instant);
@@ -1139,7 +1205,7 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
       try {
         String action = rollbackPlan.getInstantToRollback().getAction();
         if (ignoreCompactionAndClusteringInstants) {
-          if (!HoodieTimeline.COMPACTION_ACTION.equals(action)) {
+          if (!HoodieTimeline.COMPACTION_ACTION.equals(action) && !HoodieTimeline.LOG_COMPACTION_ACTION.equals(action)) {
             boolean isClustering = HoodieTimeline.REPLACE_COMMIT_ACTION.equals(action)
                 && ClusteringUtils.getClusteringPlan(metaClient, new HoodieInstant(true, rollbackPlan.getInstantToRollback().getAction(),
                 rollbackPlan.getInstantToRollback().getCommitTime())).isPresent();
@@ -1254,6 +1320,28 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
   }
 
   /**
+   * Ensures compaction instant is in expected state and performs Log Compaction for the workload stored in instant-time.s
+   *
+   * @param compactionInstantTime Compaction Instant Time
+   * @return Collection of Write Status
+   */
+  protected HoodieWriteMetadata<O> logCompact(String compactionInstantTime, boolean shouldComplete) {
+    throw new UnsupportedOperationException("Log compaction is not supported yet.");
+  }
+
+  /**
+   * Performs a log compaction operation on a table, serially before or after an insert/upsert action.
+   */
+  protected Option<String> inlineLogCompact(Option<Map<String, String>> extraMetadata) {
+    Option<String> logCompactionInstantTimeOpt = scheduleLogCompaction(extraMetadata);
+    logCompactionInstantTimeOpt.ifPresent(logCompactInstantTime -> {
+      // inline log compaction should auto commit as the user is never given control
+      logCompact(logCompactInstantTime, true);
+    });
+    return logCompactionInstantTimeOpt;
+  }
+
+  /**
    * Schedules a new clustering instant.
    * @param extraMetadata Extra Metadata to be stored
    */
@@ -1348,6 +1436,11 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
         Option<HoodieCompactionPlan> compactionPlan = createTable(config, hadoopConf)
             .scheduleCompaction(context, instantTime, extraMetadata);
         return compactionPlan.isPresent() ? Option.of(instantTime) : Option.empty();
+      case LOG_COMPACT:
+        LOG.info("Scheduling log compaction at instant time :" + instantTime);
+        Option<HoodieCompactionPlan> logCompactionPlan = createTable(config, hadoopConf)
+            .scheduleLogCompaction(context, instantTime, extraMetadata);
+        return logCompactionPlan.isPresent() ? Option.of(instantTime) : Option.empty();
       case CLEAN:
         LOG.info("Scheduling cleaning at instant time :" + instantTime);
         Option<HoodieCleanerPlan> cleanerPlan = createTable(config, hadoopConf)
@@ -1669,17 +1762,14 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
   private Pair<InternalSchema, HoodieTableMetaClient> getInternalSchemaAndMetaClient() {
     HoodieTableMetaClient metaClient = createMetaClient(true);
     TableSchemaResolver schemaUtil = new TableSchemaResolver(metaClient);
-    Option<InternalSchema> internalSchemaOption = schemaUtil.getTableInternalSchemaFromCommitMetadata();
-    if (!internalSchemaOption.isPresent()) {
-      throw new HoodieException(String.format("cannot find schema for current table: %s", config.getBasePath()));
-    }
-    return Pair.of(internalSchemaOption.get(), metaClient);
+    return Pair.of(getInternalSchema(schemaUtil), metaClient);
   }
 
   private void commitTableChange(InternalSchema newSchema, HoodieTableMetaClient metaClient) {
     TableSchemaResolver schemaUtil = new TableSchemaResolver(metaClient);
-    String historySchemaStr = schemaUtil.getTableHistorySchemaStrFromCommitMetadata().orElse("");
-    Schema schema = AvroInternalSchemaConverter.convert(newSchema, config.getTableName());
+    String historySchemaStr = schemaUtil.getTableHistorySchemaStrFromCommitMetadata().orElseGet(
+        () -> SerDeHelper.inheritSchemas(getInternalSchema(schemaUtil), ""));
+    Schema schema = AvroInternalSchemaConverter.convert(newSchema, getAvroRecordQualifiedName(config.getTableName()));
     String commitActionType = CommitUtils.getCommitActionType(WriteOperationType.ALTER_SCHEMA, metaClient.getTableType());
     String instantTime = HoodieActiveTimeline.createNewInstantTime();
     startCommitWithTime(instantTime, commitActionType, metaClient);
@@ -1694,10 +1784,20 @@ public abstract class BaseHoodieWriteClient<T extends HoodieRecordPayload, I, K,
       throw new HoodieCommitException("Failed to commit " + instantTime + " unable to save inflight metadata ", io);
     }
     Map<String, String> extraMeta = new HashMap<>();
-    extraMeta.put(SerDeHelper.LATEST_SCHEMA, SerDeHelper.toJson(newSchema.setSchemaId(Long.getLong(instantTime))));
+    extraMeta.put(SerDeHelper.LATEST_SCHEMA, SerDeHelper.toJson(newSchema.setSchemaId(Long.parseLong(instantTime))));
     // try to save history schemas
     FileBasedInternalSchemaStorageManager schemasManager = new FileBasedInternalSchemaStorageManager(metaClient);
     schemasManager.persistHistorySchemaStr(instantTime, SerDeHelper.inheritSchemas(newSchema, historySchemaStr));
     commitStats(instantTime, Collections.emptyList(), Option.of(extraMeta), commitActionType);
+  }
+
+  private InternalSchema getInternalSchema(TableSchemaResolver schemaUtil) {
+    return schemaUtil.getTableInternalSchemaFromCommitMetadata().orElseGet(() -> {
+      try {
+        return AvroInternalSchemaConverter.convert(schemaUtil.getTableAvroSchema());
+      } catch (Exception e) {
+        throw new HoodieException(String.format("cannot find schema for current table: %s", config.getBasePath()));
+      }
+    });
   }
 }

@@ -21,13 +21,14 @@ package org.apache.hudi.sink.compact;
 import org.apache.hudi.client.HoodieFlinkWriteClient;
 import org.apache.hudi.client.WriteStatus;
 import org.apache.hudi.common.model.CompactionOperation;
+import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.configuration.OptionsResolver;
 import org.apache.hudi.sink.utils.NonThrownExecutor;
 import org.apache.hudi.table.HoodieFlinkCopyOnWriteTable;
 import org.apache.hudi.table.action.compact.HoodieFlinkMergeOnReadTableCompactor;
 import org.apache.hudi.util.CompactionUtil;
-import org.apache.hudi.util.StreamerUtil;
+import org.apache.hudi.util.FlinkWriteClients;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.configuration.Configuration;
@@ -79,7 +80,7 @@ public class CompactFunction extends ProcessFunction<CompactionPlanEvent, Compac
   @Override
   public void open(Configuration parameters) throws Exception {
     this.taskID = getRuntimeContext().getIndexOfThisSubtask();
-    this.writeClient = StreamerUtil.createWriteClient(conf, getRuntimeContext());
+    this.writeClient = FlinkWriteClients.createWriteClient(conf, getRuntimeContext());
     if (this.asyncCompaction) {
       this.executor = NonThrownExecutor.builder(LOG).build();
     }
@@ -107,15 +108,17 @@ public class CompactFunction extends ProcessFunction<CompactionPlanEvent, Compac
                             Collector<CompactionCommitEvent> collector,
                             HoodieWriteConfig writeConfig) throws IOException {
     HoodieFlinkMergeOnReadTableCompactor<?> compactor = new HoodieFlinkMergeOnReadTableCompactor<>();
+    HoodieTableMetaClient metaClient = writeClient.getHoodieTable().getMetaClient();
+    String maxInstantTime = compactor.getMaxInstantTime(metaClient);
     List<WriteStatus> writeStatuses = compactor.compact(
         new HoodieFlinkCopyOnWriteTable<>(
             writeConfig,
             writeClient.getEngineContext(),
-            writeClient.getHoodieTable().getMetaClient()),
-        writeClient.getHoodieTable().getMetaClient(),
+            metaClient),
+        metaClient,
         writeClient.getConfig(),
         compactionOperation,
-        instantTime,
+        instantTime, maxInstantTime,
         writeClient.getHoodieTable().getTaskContextSupplier());
     collector.collect(new CompactionCommitEvent(instantTime, compactionOperation.getFileId(), writeStatuses, taskID));
   }
@@ -129,5 +132,17 @@ public class CompactFunction extends ProcessFunction<CompactionPlanEvent, Compac
   @VisibleForTesting
   public void setExecutor(NonThrownExecutor executor) {
     this.executor = executor;
+  }
+
+  @Override
+  public void close() throws Exception {
+    if (null != this.executor) {
+      this.executor.close();
+    }
+    if (null != this.writeClient) {
+      this.writeClient.cleanHandlesGracefully();
+      this.writeClient.close();
+      this.writeClient = null;
+    }
   }
 }

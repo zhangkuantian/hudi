@@ -79,6 +79,10 @@ object HoodieProcedures {
       ,(RunCleanProcedure.NAME, RunCleanProcedure.builder)
       ,(ValidateHoodieSyncProcedure.NAME, ValidateHoodieSyncProcedure.builder)
       ,(ShowInvalidParquetProcedure.NAME, ShowInvalidParquetProcedure.builder)
+      ,(HiveSyncProcedure.NAME, HiveSyncProcedure.builder)
+      ,(CopyToTempView.NAME, CopyToTempView.builder)
+      ,(ShowCommitExtraMetadataProcedure.NAME, ShowCommitExtraMetadataProcedure.builder)
+      ,(ShowTablePropertiesProcedure.NAME, ShowTablePropertiesProcedure.builder)
     )
   }
 }
