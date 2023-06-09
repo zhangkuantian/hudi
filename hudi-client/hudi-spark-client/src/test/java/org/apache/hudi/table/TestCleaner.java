@@ -18,6 +18,8 @@
 
 package org.apache.hudi.table;
 
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.Path;
 import org.apache.hudi.avro.model.HoodieActionInstant;
 import org.apache.hudi.avro.model.HoodieCleanMetadata;
 import org.apache.hudi.avro.model.HoodieCleanPartitionMetadata;
@@ -28,6 +30,7 @@ import org.apache.hudi.avro.model.HoodieClusteringStrategy;
 import org.apache.hudi.avro.model.HoodieRequestedReplaceMetadata;
 import org.apache.hudi.avro.model.HoodieRollbackMetadata;
 import org.apache.hudi.avro.model.HoodieSliceInfo;
+import org.apache.hudi.client.HoodieTimelineArchiver;
 import org.apache.hudi.client.SparkRDDWriteClient;
 import org.apache.hudi.client.WriteStatus;
 import org.apache.hudi.client.common.HoodieSparkEngineContext;
@@ -48,6 +51,7 @@ import org.apache.hudi.common.model.HoodieWriteStat;
 import org.apache.hudi.common.model.IOType;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
+import org.apache.hudi.common.table.marker.MarkerType;
 import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.timeline.HoodieInstant.State;
@@ -56,6 +60,7 @@ import org.apache.hudi.common.table.timeline.TimelineMetadataUtils;
 import org.apache.hudi.common.table.timeline.versioning.clean.CleanMetadataMigrator;
 import org.apache.hudi.common.table.timeline.versioning.clean.CleanPlanMigrator;
 import org.apache.hudi.common.table.timeline.versioning.clean.CleanPlanV1MigrationHandler;
+import org.apache.hudi.common.table.timeline.versioning.clean.CleanPlanV2MigrationHandler;
 import org.apache.hudi.common.table.view.FileSystemViewStorageConfig;
 import org.apache.hudi.common.testutils.HoodieMetadataTestTable;
 import org.apache.hudi.common.testutils.HoodieTestTable;
@@ -65,6 +70,7 @@ import org.apache.hudi.common.util.CollectionUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.collection.Pair;
+import org.apache.hudi.config.HoodieArchivalConfig;
 import org.apache.hudi.config.HoodieCleanConfig;
 import org.apache.hudi.config.HoodieCompactionConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
@@ -76,14 +82,11 @@ import org.apache.hudi.metadata.HoodieTableMetadataWriter;
 import org.apache.hudi.metadata.SparkHoodieBackedTableMetadataWriter;
 import org.apache.hudi.table.action.clean.CleanPlanner;
 import org.apache.hudi.testutils.HoodieClientTestBase;
-
-import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.Path;
 import org.apache.spark.api.java.JavaRDD;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import scala.Tuple3;
 
 import java.io.File;
 import java.io.IOException;
@@ -101,8 +104,6 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import scala.Tuple3;
-
 import static org.apache.hudi.HoodieTestCommitGenerator.getBaseFilename;
 import static org.apache.hudi.common.testutils.HoodieTestTable.makeNewCommitTime;
 import static org.apache.hudi.common.testutils.HoodieTestUtils.DEFAULT_PARTITION_PATHS;
@@ -117,8 +118,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Test Cleaning related logic.
  */
-// TODO uncomment
-@Disabled
 public class TestCleaner extends HoodieClientTestBase {
 
   private static final int BIG_BATCH_INSERT_SIZE = 500;
@@ -597,7 +596,7 @@ public class TestCleaner extends HoodieClientTestBase {
           }
         })
     );
-    metadataWriter.update(commitMetadata, "00000000000001", false);
+    metadataWriter.update(commitMetadata, "00000000000001");
     metaClient.getActiveTimeline().saveAsComplete(
         new HoodieInstant(State.INFLIGHT, HoodieTimeline.COMMIT_ACTION, "00000000000001"),
         Option.of(commitMetadata.toJsonString().getBytes(StandardCharsets.UTF_8)));
@@ -1052,7 +1051,7 @@ public class TestCleaner extends HoodieClientTestBase {
           }
         })
     );
-    metadataWriter.update(commitMetadata, "00000000000001", false);
+    metadataWriter.update(commitMetadata, "00000000000001");
     metaClient.getActiveTimeline().saveAsComplete(
         new HoodieInstant(State.INFLIGHT, HoodieTimeline.COMMIT_ACTION, "00000000000001"),
         Option.of(commitMetadata.toJsonString().getBytes(StandardCharsets.UTF_8)));
@@ -1089,6 +1088,109 @@ public class TestCleaner extends HoodieClientTestBase {
     assertFalse(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
     //file1P1C0 still stays because its not replaced until 3 and its the only version available
     assertTrue(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
+  }
+
+  /** Test if cleaner will fallback to full clean if commit for incremental clean is archived. */
+  @Test
+  public void testIncrementalFallbackToFullClean() throws Exception {
+    HoodieWriteConfig config = HoodieWriteConfig.newBuilder()
+        .withCleanConfig(
+            HoodieCleanConfig.newBuilder()
+                .retainCommits(1)
+                .withIncrementalCleaningMode(true)
+                .build())
+        .withMetadataConfig(
+            HoodieMetadataConfig.newBuilder()
+                .withMaxNumDeltaCommitsBeforeCompaction(1).build())
+        .withArchivalConfig(
+            HoodieArchivalConfig.newBuilder()
+                .archiveCommitsWith(4, 5).build())
+        .withMarkersType(MarkerType.DIRECT.name())
+        .withPath(basePath)
+        .build();
+    HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context);
+    HoodieTestTable testTable = HoodieMetadataTestTable.of(metaClient, metadataWriter);
+    testTable.updateFilesPartitionInTableConfig();
+
+    String p1 = "part_1";
+    String p2 = "part_2";
+    testTable.withPartitionMetaFiles(p1, p2);
+
+    // add file partition "part_1"
+    String file1P1 = UUID.randomUUID().toString();
+    String file2P1 = UUID.randomUUID().toString();
+    Map<String, List<String>> part1ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
+      {
+        put(p1, CollectionUtils.createImmutableList(file1P1, file2P1));
+      }
+    });
+    commitWithMdt("1", part1ToFileId, testTable, metadataWriter);
+    commitWithMdt("2", part1ToFileId, testTable, metadataWriter);
+
+    // add clean instant
+    HoodieCleanerPlan cleanerPlan = new HoodieCleanerPlan(new HoodieActionInstant("", "", ""),
+        "", "", new HashMap<>(), CleanPlanV2MigrationHandler.VERSION, new HashMap<>(), new ArrayList<>());
+    HoodieCleanMetadata cleanMeta = new HoodieCleanMetadata("", 0L, 0,
+        "2", "", new HashMap<>(), CleanPlanV2MigrationHandler.VERSION, new HashMap<>());
+    testTable.addClean("3", cleanerPlan, cleanMeta);
+
+    // add file in partition "part_2"
+    String file3P2 = UUID.randomUUID().toString();
+    String file4P2 = UUID.randomUUID().toString();
+    Map<String, List<String>> part2ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
+      {
+        put(p2, CollectionUtils.createImmutableList(file3P2, file4P2));
+      }
+    });
+    commitWithMdt("3", part2ToFileId, testTable, metadataWriter);
+    commitWithMdt("4", part2ToFileId, testTable, metadataWriter);
+
+    // empty commits
+    String file5P2 = UUID.randomUUID().toString();
+    String file6P2 = UUID.randomUUID().toString();
+    part2ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
+      {
+        put(p2, CollectionUtils.createImmutableList(file5P2, file6P2));
+      }
+    });
+    commitWithMdt("5", part2ToFileId, testTable, metadataWriter);
+    commitWithMdt("6", part2ToFileId, testTable, metadataWriter);
+
+    // archive commit 1, 2
+    new HoodieTimelineArchiver<>(config, HoodieSparkTable.create(config, context, metaClient))
+        .archiveIfRequired(context, false);
+    metaClient = HoodieTableMetaClient.reload(metaClient);
+    assertFalse(metaClient.getActiveTimeline().containsInstant("1"));
+    assertFalse(metaClient.getActiveTimeline().containsInstant("2"));
+
+    runCleaner(config);
+    assertFalse(testTable.baseFileExists(p1, "1", file1P1), "Clean old FileSlice in p1 by fallback to full clean");
+    assertFalse(testTable.baseFileExists(p1, "1", file2P1), "Clean old FileSlice in p1 by fallback to full clean");
+    assertFalse(testTable.baseFileExists(p2, "3", file3P2), "Clean old FileSlice in p2");
+    assertFalse(testTable.baseFileExists(p2, "3", file4P2), "Clean old FileSlice in p2");
+    assertTrue(testTable.baseFileExists(p1, "2", file1P1), "Latest FileSlice exists");
+    assertTrue(testTable.baseFileExists(p1, "2", file2P1), "Latest FileSlice exists");
+    assertTrue(testTable.baseFileExists(p2, "4", file3P2), "Latest FileSlice exists");
+    assertTrue(testTable.baseFileExists(p2, "4", file4P2), "Latest FileSlice exists");
+  }
+
+  private void commitWithMdt(String instantTime, Map<String, List<String>> partToFileId,
+                             HoodieTestTable testTable, HoodieTableMetadataWriter metadataWriter) throws Exception {
+    HoodieCommitMetadata commitMeta = generateCommitMetadata(instantTime, partToFileId);
+    testTable.addInflightCommit(instantTime);
+    partToFileId.forEach((key, value) -> {
+      try {
+        testTable.withBaseFilesInPartition(key, value.toArray(new String[0]));
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+    });
+    metadataWriter.performTableServices(Option.of(instantTime));
+    metadataWriter.update(commitMeta, instantTime);
+    metaClient.getActiveTimeline().saveAsComplete(
+        new HoodieInstant(State.INFLIGHT, HoodieTimeline.COMMIT_ACTION, instantTime),
+        Option.of(commitMeta.toJsonString().getBytes(StandardCharsets.UTF_8)));
+    metaClient = HoodieTableMetaClient.reload(metaClient);
   }
 
   /**

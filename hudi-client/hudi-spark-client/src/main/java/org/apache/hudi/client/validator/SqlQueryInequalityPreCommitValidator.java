@@ -21,17 +21,16 @@ package org.apache.hudi.client.validator;
 import org.apache.hudi.client.WriteStatus;
 import org.apache.hudi.common.data.HoodieData;
 import org.apache.hudi.common.engine.HoodieEngineContext;
-import org.apache.hudi.common.model.HoodieRecordPayload;
 import org.apache.hudi.config.HoodiePreCommitValidatorConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.table.HoodieSparkTable;
 
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SQLContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Validator to run sql query and compare table state
@@ -40,8 +39,8 @@ import org.apache.spark.sql.SQLContext;
  * <p>
  * Expects query results do not match.
  */
-public class SqlQueryInequalityPreCommitValidator<T extends HoodieRecordPayload, I, K, O extends HoodieData<WriteStatus>> extends SqlQueryPreCommitValidator<T, I, K, O> {
-  private static final Logger LOG = LogManager.getLogger(SqlQueryInequalityPreCommitValidator.class);
+public class SqlQueryInequalityPreCommitValidator<T, I, K, O extends HoodieData<WriteStatus>> extends SqlQueryPreCommitValidator<T, I, K, O> {
+  private static final Logger LOG = LoggerFactory.getLogger(SqlQueryInequalityPreCommitValidator.class);
 
   public SqlQueryInequalityPreCommitValidator(HoodieSparkTable<T> table, HoodieEngineContext engineContext, HoodieWriteConfig config) {
     super(table, engineContext, config);
@@ -57,9 +56,11 @@ public class SqlQueryInequalityPreCommitValidator<T extends HoodieRecordPayload,
     String queryWithPrevSnapshot = query.replaceAll(HoodiePreCommitValidatorConfig.VALIDATOR_TABLE_VARIABLE, prevTableSnapshot);
     String queryWithNewSnapshot = query.replaceAll(HoodiePreCommitValidatorConfig.VALIDATOR_TABLE_VARIABLE, newTableSnapshot);
     LOG.info("Running query on previous state: " + queryWithPrevSnapshot);
-    Dataset<Row> prevRows = sqlContext.sql(queryWithPrevSnapshot);
+    Dataset<Row> prevRows = sqlContext.sql(queryWithPrevSnapshot).cache();
+    LOG.info("Total rows in prevRows " + prevRows.count());
     LOG.info("Running query on new state: " + queryWithNewSnapshot);
-    Dataset<Row> newRows  = sqlContext.sql(queryWithNewSnapshot);
+    Dataset<Row> newRows  = sqlContext.sql(queryWithNewSnapshot).cache();
+    LOG.info("Total rows in newRows " + newRows.count());
     printAllRowsIfDebugEnabled(prevRows);
     printAllRowsIfDebugEnabled(newRows);
     boolean areDatasetsEqual = prevRows.intersect(newRows).count() == prevRows.count();

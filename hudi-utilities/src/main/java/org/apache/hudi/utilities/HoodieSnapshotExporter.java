@@ -46,8 +46,6 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.Column;
@@ -56,6 +54,8 @@ import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SQLContext;
 import org.apache.spark.sql.SaveMode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -65,6 +65,8 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import scala.collection.JavaConversions;
+
+import static org.apache.hudi.utilities.UtilHelpers.buildSparkConf;
 
 /**
  * Export the latest records of Hudi dataset to a set of external files (e.g., plain parquet files).
@@ -78,7 +80,7 @@ public class HoodieSnapshotExporter {
 
   }
 
-  private static final Logger LOG = LogManager.getLogger(HoodieSnapshotExporter.class);
+  private static final Logger LOG = LoggerFactory.getLogger(HoodieSnapshotExporter.class);
 
   public static class OutputFormatValidator implements IValueValidator<String> {
 
@@ -282,8 +284,7 @@ public class HoodieSnapshotExporter {
     final Config cfg = new Config();
     new JCommander(cfg, null, args);
 
-    SparkConf sparkConf = new SparkConf().setAppName("Hoodie-snapshot-exporter");
-    sparkConf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer");
+    SparkConf sparkConf = buildSparkConf("Hoodie-snapshot-exporter", "local[*]");
     JavaSparkContext jsc = new JavaSparkContext(sparkConf);
     LOG.info("Initializing spark job.");
 

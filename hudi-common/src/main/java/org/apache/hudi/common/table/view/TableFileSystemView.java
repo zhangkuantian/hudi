@@ -29,6 +29,7 @@ import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.Pair;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -63,6 +64,16 @@ public interface TableFileSystemView {
      * maxCommitTime.
      */
     Stream<HoodieBaseFile> getLatestBaseFilesBeforeOrOn(String partitionPath, String maxCommitTime);
+
+    /**
+     * Streams the latest version base files in all partitions with precondition that
+     * commitTime(file) before maxCommitTime.
+     *
+     * @param maxCommitTime The max commit time to consider.
+     * @return A {@link Map} of partition path to the latest version base files before or on the
+     * commit time
+     */
+    Map<String, Stream<HoodieBaseFile>> getAllLatestBaseFilesBeforeOrOn(String maxCommitTime);
 
     /**
      * Stream all the latest data files pass.
@@ -115,6 +126,14 @@ public interface TableFileSystemView {
      */
     Stream<FileSlice> getLatestFileSlicesBeforeOrOn(String partitionPath, String maxCommitTime,
         boolean includeFileSlicesInPendingCompaction);
+
+    /**
+     * Stream all latest file slices with precondition that commitTime(file) before maxCommitTime.
+     *
+     * @param maxCommitTime Max Instant Time
+     * @return A {@link Map} of partition path to the latest file slices before maxCommitTime.
+     */
+    Map<String, Stream<FileSlice>> getAllLatestFileSlicesBeforeOrOn(String maxCommitTime);
 
     /**
      * Stream all "merged" file-slices before on an instant time If a file-group has a pending compaction request, the
@@ -184,6 +203,11 @@ public interface TableFileSystemView {
   Stream<HoodieFileGroup> getReplacedFileGroupsBefore(String maxCommitTime, String partitionPath);
 
   /**
+   * Stream all the replaced file groups after or on minCommitTime.
+   */
+  Stream<HoodieFileGroup> getReplacedFileGroupsAfterOrOn(String minCommitTime, String partitionPath);
+
+  /**
    * Stream all the replaced file groups for given partition.
    */
   Stream<HoodieFileGroup> getAllReplacedFileGroups(String partitionPath);
@@ -192,4 +216,10 @@ public interface TableFileSystemView {
    * Filegroups that are in pending clustering.
    */
   Stream<Pair<HoodieFileGroupId, HoodieInstant>> getFileGroupsInPendingClustering();
+
+
+  /**
+   * Load all partition and file slices into view
+   */
+  Void loadAllPartitions();
 }

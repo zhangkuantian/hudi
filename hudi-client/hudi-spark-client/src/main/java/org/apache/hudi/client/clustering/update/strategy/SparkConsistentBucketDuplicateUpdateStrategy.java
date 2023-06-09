@@ -42,8 +42,8 @@ import org.apache.hudi.index.bucket.HoodieSparkConsistentBucketIndex;
 import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.action.cluster.strategy.UpdateStrategy;
 
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -65,7 +65,7 @@ import static org.apache.hudi.index.HoodieIndexUtils.getTaggedRecord;
  */
 public class SparkConsistentBucketDuplicateUpdateStrategy<T extends HoodieRecordPayload<T>> extends UpdateStrategy<T, HoodieData<HoodieRecord<T>>> {
 
-  private static final Logger LOG = LogManager.getLogger(SparkConsistentBucketDuplicateUpdateStrategy.class);
+  private static final Logger LOG = LoggerFactory.getLogger(SparkConsistentBucketDuplicateUpdateStrategy.class);
 
   public SparkConsistentBucketDuplicateUpdateStrategy(HoodieEngineContext engineContext, HoodieTable table, Set<HoodieFileGroupId> fileGroupsInPendingClustering) {
     super(engineContext, table, fileGroupsInPendingClustering);
@@ -88,7 +88,7 @@ public class SparkConsistentBucketDuplicateUpdateStrategy<T extends HoodieRecord
 
     // Read all pending/ongoing clustering plans
     List<Pair<HoodieInstant, HoodieClusteringPlan>> instantPlanPairs =
-        table.getMetaClient().getActiveTimeline().filterInflightsAndRequested().filter(instant -> instant.getAction().equals(HoodieTimeline.REPLACE_COMMIT_ACTION)).getInstants()
+        table.getMetaClient().getActiveTimeline().filterInflightsAndRequested().filter(instant -> instant.getAction().equals(HoodieTimeline.REPLACE_COMMIT_ACTION)).getInstantsAsStream()
             .map(instant -> ClusteringUtils.getClusteringPlan(table.getMetaClient(), instant))
             .flatMap(o -> o.isPresent() ? Stream.of(o.get()) : Stream.empty())
             .collect(Collectors.toList());

@@ -40,8 +40,6 @@ import org.apache.hudi.utilities.testutils.UtilitiesTestBase;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -132,12 +130,12 @@ public class TestHoodieTestSuiteJob extends UtilitiesTestBase {
     UtilitiesTestBase.Helpers.savePropsToDFS(downstreamProps, fs,
         basePath + "/test-downstream-source.properties");
     // these tests cause a lot of log verbosity from spark, turning it down
-    Logger.getLogger("org.apache.spark").setLevel(Level.WARN);
+    org.apache.log4j.Logger.getLogger("org.apache.spark").setLevel(org.apache.log4j.Level.WARN);
   }
 
   @AfterAll
   public static void cleanupClass() {
-    UtilitiesTestBase.cleanupClass();
+    UtilitiesTestBase.cleanUpUtilitiesTestServices();
   }
 
   @BeforeEach
@@ -212,7 +210,7 @@ public class TestHoodieTestSuiteJob extends UtilitiesTestBase {
     HoodieTestSuiteJob hoodieTestSuiteJob = new HoodieTestSuiteJob(cfg, jsc);
     hoodieTestSuiteJob.runTestSuite();
     HoodieTableMetaClient metaClient = HoodieTableMetaClient.builder().setConf(new Configuration()).setBasePath(cfg.targetBasePath).build();
-    assertEquals(metaClient.getActiveTimeline().getCommitsTimeline().getInstants().count(), 2);
+    assertEquals(metaClient.getActiveTimeline().getCommitsTimeline().countInstants(), 2);
   }
 
   @Test
@@ -231,7 +229,7 @@ public class TestHoodieTestSuiteJob extends UtilitiesTestBase {
     HoodieTestSuiteJob hoodieTestSuiteJob = new HoodieTestSuiteJob(cfg, jsc);
     hoodieTestSuiteJob.runTestSuite();
     HoodieTableMetaClient metaClient = HoodieTableMetaClient.builder().setConf(new Configuration()).setBasePath(cfg.targetBasePath).build();
-    assertEquals(metaClient.getActiveTimeline().getCommitsTimeline().getInstants().count(), 1);
+    assertEquals(metaClient.getActiveTimeline().getCommitsTimeline().countInstants(), 1);
   }
 
   @Test
@@ -246,7 +244,7 @@ public class TestHoodieTestSuiteJob extends UtilitiesTestBase {
     HoodieTestSuiteJob hoodieTestSuiteJob = new HoodieTestSuiteJob(cfg, jsc);
     hoodieTestSuiteJob.runTestSuite();
     HoodieTableMetaClient metaClient = HoodieTableMetaClient.builder().setConf(new Configuration()).setBasePath(cfg.targetBasePath).build();
-    //assertEquals(metaClient.getActiveTimeline().getCommitsTimeline().getInstants().count(), 5);
+    //assertEquals(metaClient.getActiveTimeline().getCommitsTimeline().countInstants(), 5);
   }
 
   @Test
@@ -261,7 +259,7 @@ public class TestHoodieTestSuiteJob extends UtilitiesTestBase {
     HoodieTestSuiteJob hoodieTestSuiteJob = new HoodieTestSuiteJob(cfg, jsc);
     hoodieTestSuiteJob.runTestSuite();
     HoodieTableMetaClient metaClient = HoodieTableMetaClient.builder().setConf(new Configuration()).setBasePath(cfg.targetBasePath).build();
-    //assertEquals(metaClient.getActiveTimeline().getCommitsTimeline().getInstants().count(), 7);
+    //assertEquals(metaClient.getActiveTimeline().getCommitsTimeline().countInstants(), 7);
   }
 
   @Test
@@ -282,7 +280,7 @@ public class TestHoodieTestSuiteJob extends UtilitiesTestBase {
     HoodieTestSuiteJob hoodieTestSuiteJob = new HoodieTestSuiteJob(cfg, jsc);
     hoodieTestSuiteJob.runTestSuite();
     HoodieTableMetaClient metaClient = HoodieTableMetaClient.builder().setConf(new Configuration()).setBasePath(cfg.targetBasePath).build();
-    assertEquals(metaClient.getActiveTimeline().getCommitsTimeline().getInstants().count(), 3);
+    assertEquals(metaClient.getActiveTimeline().getCommitsTimeline().countInstants(), 3);
   }
 
   @Test

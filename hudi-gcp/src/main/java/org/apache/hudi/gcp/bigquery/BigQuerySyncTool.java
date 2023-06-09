@@ -25,8 +25,8 @@ import org.apache.hudi.sync.common.HoodieSyncTool;
 import org.apache.hudi.sync.common.util.ManifestFileWriter;
 
 import com.beust.jcommander.JCommander;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Properties;
 
@@ -49,7 +49,7 @@ import static org.apache.hudi.gcp.bigquery.BigQuerySyncConfig.BIGQUERY_SYNC_USE_
  */
 public class BigQuerySyncTool extends HoodieSyncTool {
 
-  private static final Logger LOG = LogManager.getLogger(BigQuerySyncTool.class);
+  private static final Logger LOG = LoggerFactory.getLogger(BigQuerySyncTool.class);
 
   public final BigQuerySyncConfig config;
   public final String tableName;
@@ -96,7 +96,7 @@ public class BigQuerySyncTool extends HoodieSyncTool {
         .setUseFileListingFromMetadata(config.getBoolean(BIGQUERY_SYNC_USE_FILE_LISTING_FROM_METADATA))
         .setAssumeDatePartitioning(config.getBoolean(BIGQUERY_SYNC_ASSUME_DATE_PARTITIONING))
         .build();
-    manifestFileWriter.writeManifestFile();
+    manifestFileWriter.writeManifestFile(false);
 
     if (!bqSyncClient.tableExists(manifestTableName)) {
       bqSyncClient.createManifestTable(manifestTableName, manifestFileWriter.getManifestSourceUri());

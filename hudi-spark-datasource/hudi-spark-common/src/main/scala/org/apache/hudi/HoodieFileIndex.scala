@@ -19,13 +19,15 @@ package org.apache.hudi
 
 import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.hudi.HoodieFileIndex.{DataSkippingFailureMode, collectReferencedColumns, getConfigProperties}
+import org.apache.hudi.HoodieSparkConfUtils.getConfigValue
+import org.apache.hudi.common.config.TimestampKeyGeneratorConfig.{TIMESTAMP_INPUT_DATE_FORMAT, TIMESTAMP_OUTPUT_DATE_FORMAT}
 import org.apache.hudi.common.config.{HoodieMetadataConfig, TypedProperties}
+import org.apache.hudi.common.model.HoodieBaseFile
 import org.apache.hudi.common.table.HoodieTableMetaClient
 import org.apache.hudi.common.util.StringUtils
 import org.apache.hudi.exception.HoodieException
-import org.apache.hudi.keygen.constant.KeyGeneratorOptions
 import org.apache.hudi.keygen.{TimestampBasedAvroKeyGenerator, TimestampBasedKeyGenerator}
-import org.apache.hudi.metadata.{HoodieMetadataPayload, HoodieTableMetadataUtil}
+import org.apache.hudi.metadata.HoodieMetadataPayload
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{And, Expression, Literal}
@@ -38,7 +40,9 @@ import org.apache.spark.sql.{Column, SparkSession}
 import org.apache.spark.unsafe.types.UTF8String
 
 import java.text.SimpleDateFormat
+import javax.annotation.concurrent.NotThreadSafe
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
@@ -65,6 +69,7 @@ import scala.util.{Failure, Success, Try}
  *
  * TODO rename to HoodieSparkSqlFileIndex
  */
+@NotThreadSafe
 case class HoodieFileIndex(spark: SparkSession,
                            metaClient: HoodieTableMetaClient,
                            schemaSpec: Option[StructType],
@@ -74,13 +79,19 @@ case class HoodieFileIndex(spark: SparkSession,
     spark = spark,
     metaClient = metaClient,
     schemaSpec = schemaSpec,
-    configProperties = getConfigProperties(spark, options, metaClient),
+    configProperties = getConfigProperties(spark, options),
     queryPaths = HoodieFileIndex.getQueryPaths(options),
     specifiedQueryInstant = options.get(DataSourceReadOptions.TIME_TRAVEL_AS_OF_INSTANT.key).map(HoodieSqlCommonUtils.formatQueryInstant),
     fileStatusCache = fileStatusCache
   )
     with FileIndex {
 
+  @transient private var hasPushedDownPartitionPredicates: Boolean = false
+
+  /**
+   * NOTE: [[ColumnStatsIndexSupport]] is a transient state, since it's only relevant while logical plan
+   *       is handled by the Spark's driver
+   */
   @transient private lazy val columnStatsIndex = new ColumnStatsIndexSupport(spark, schema, metadataConfig, metaClient)
 
   override def rootPaths: Seq[Path] = getQueryPaths.asScala
@@ -136,11 +147,10 @@ case class HoodieFileIndex(spark: SparkSession,
     val prunedPartitions = listMatchingPartitionPaths(partitionFilters)
     val listedPartitions = getInputFileSlices(prunedPartitions: _*).asScala.toSeq.map {
       case (partition, fileSlices) =>
-        val baseFileStatuses: Seq[FileStatus] =
-          fileSlices.asScala
-            .map(fs => fs.getBaseFile.orElse(null))
-            .filter(_ != null)
-            .map(_.getFileStatus)
+        val baseFileStatuses: Seq[FileStatus] = getBaseFileStatus(fileSlices
+          .asScala
+          .map(fs => fs.getBaseFile.orElse(null))
+          .filter(_ != null))
 
         // Filter in candidate files based on the col-stats index lookup
         val candidateFiles = baseFileStatuses.filter(fs =>
@@ -161,10 +171,29 @@ case class HoodieFileIndex(spark: SparkSession,
       s"candidate files after data skipping: $candidateFileSize; " +
       s"skipping percentage $skippingRatio")
 
+    hasPushedDownPartitionPredicates = true
+
     if (shouldReadAsPartitionedTable()) {
       listedPartitions
     } else {
       Seq(PartitionDirectory(InternalRow.empty, listedPartitions.flatMap(_.files)))
+    }
+  }
+
+  /**
+   * In the fast bootstrap read code path, it gets the file status for the bootstrap base files instead of
+   * skeleton files.
+   */
+  private def getBaseFileStatus(baseFiles: mutable.Buffer[HoodieBaseFile]): mutable.Buffer[FileStatus] = {
+    if (shouldFastBootstrap) {
+     baseFiles.map(f =>
+        if (f.getBootstrapBaseFile.isPresent) {
+         f.getBootstrapBaseFile.get().getFileStatus
+        } else {
+          f.getFileStatus
+        })
+    } else {
+      baseFiles.map(_.getFileStatus)
     }
   }
 
@@ -244,6 +273,7 @@ case class HoodieFileIndex(spark: SparkSession,
   override def refresh(): Unit = {
     super.refresh()
     columnStatsIndex.invalidateCaches()
+    hasPushedDownPartitionPredicates = false
   }
 
   override def inputFiles: Array[String] =
@@ -251,10 +281,14 @@ case class HoodieFileIndex(spark: SparkSession,
 
   override def sizeInBytes: Long = getTotalCachedFilesSize
 
-  private def isDataSkippingEnabled: Boolean = HoodieFileIndex.getBooleanConfigValue(options, spark.sessionState.conf, DataSourceReadOptions.ENABLE_DATA_SKIPPING.key(),
-  "false")
+  def hasPredicatesPushedDown: Boolean =
+    hasPushedDownPartitionPredicates
+
+  private def isDataSkippingEnabled: Boolean = getConfigValue(options, spark.sessionState.conf,
+    DataSourceReadOptions.ENABLE_DATA_SKIPPING.key, DataSourceReadOptions.ENABLE_DATA_SKIPPING.defaultValue.toString).toBoolean
 
   private def isMetadataTableEnabled: Boolean = metadataConfig.enabled()
+
   private def isColumnStatsIndexEnabled: Boolean = metadataConfig.isColumnStatsIndexEnabled
 
   private def validateConfig(): Unit = {
@@ -267,10 +301,6 @@ case class HoodieFileIndex(spark: SparkSession,
 }
 
 object HoodieFileIndex extends Logging {
-
-  def getBooleanConfigValue(options: Map[String, String], sqlConf: SQLConf, configKey: String, defaultValue: String) : Boolean = {
-    options.getOrElse(configKey, sqlConf.getConfString(configKey, defaultValue)).toBoolean
-  }
 
   object DataSkippingFailureMode extends Enumeration {
     val configName = "hoodie.fileIndex.dataSkippingFailureMode"
@@ -294,20 +324,25 @@ object HoodieFileIndex extends Logging {
     schema.fieldNames.filter { colName => refs.exists(r => resolver.apply(colName, r.name)) }
   }
 
-  private def isFilesPartitionAvailable(metaClient: HoodieTableMetaClient): Boolean = {
-    metaClient.getTableConfig.getMetadataPartitions.contains(HoodieTableMetadataUtil.PARTITION_NAME_FILES)
-  }
-
-  def getConfigProperties(spark: SparkSession, options: Map[String, String], metaClient: HoodieTableMetaClient) = {
+  def getConfigProperties(spark: SparkSession, options: Map[String, String]) = {
     val sqlConf: SQLConf = spark.sessionState.conf
-    val properties = new TypedProperties()
+    val properties = TypedProperties.fromMap(options.filter(p => p._2 != null).asJava)
+
+    // TODO(HUDI-5361) clean up properties carry-over
 
     // To support metadata listing via Spark SQL we allow users to pass the config via SQL Conf in spark session. Users
     // would be able to run SET hoodie.metadata.enable=true in the spark sql session to enable metadata listing.
-    val isMetadataFilesPartitionAvailable = isFilesPartitionAvailable(metaClient) &&
-      getBooleanConfigValue(options, sqlConf, HoodieMetadataConfig.ENABLE.key(), HoodieMetadataConfig.DEFAULT_METADATA_ENABLE_FOR_READERS.toString)
-    properties.putAll(options.filter(p => p._2 != null).asJava)
-    properties.setProperty(HoodieMetadataConfig.ENABLE.key(), String.valueOf(isMetadataFilesPartitionAvailable))
+    val isMetadataTableEnabled = getConfigValue(options, sqlConf, HoodieMetadataConfig.ENABLE.key, null)
+    if (isMetadataTableEnabled != null) {
+      properties.setProperty(HoodieMetadataConfig.ENABLE.key(), String.valueOf(isMetadataTableEnabled))
+    }
+
+    val listingModeOverride = getConfigValue(options, sqlConf,
+      DataSourceReadOptions.FILE_INDEX_LISTING_MODE_OVERRIDE.key, null)
+    if (listingModeOverride != null) {
+      properties.setProperty(DataSourceReadOptions.FILE_INDEX_LISTING_MODE_OVERRIDE.key, listingModeOverride)
+    }
+
     properties
   }
 
@@ -319,10 +354,10 @@ object HoodieFileIndex extends Logging {
 
     if (keyGenerator != null && (keyGenerator.equals(classOf[TimestampBasedKeyGenerator].getCanonicalName) ||
         keyGenerator.equals(classOf[TimestampBasedAvroKeyGenerator].getCanonicalName))) {
-      val inputFormat = tableConfig.getString(KeyGeneratorOptions.Config.TIMESTAMP_INPUT_DATE_FORMAT_PROP)
-      val outputFormat = tableConfig.getString(KeyGeneratorOptions.Config.TIMESTAMP_OUTPUT_DATE_FORMAT_PROP)
+      val inputFormat = tableConfig.getString(TIMESTAMP_INPUT_DATE_FORMAT.key())
+      val outputFormat = tableConfig.getString(TIMESTAMP_OUTPUT_DATE_FORMAT.key())
       if (StringUtils.isNullOrEmpty(inputFormat) || StringUtils.isNullOrEmpty(outputFormat) ||
-          inputFormat.equals(outputFormat)) {
+        inputFormat.equals(outputFormat)) {
         partitionFilters
       } else {
         try {

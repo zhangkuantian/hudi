@@ -50,5 +50,18 @@ public interface HoodieMessageQueue<I, O> extends Closeable {
    */
   void markAsFailed(Throwable e);
 
+  Throwable getThrowable();
+
   boolean isEmpty();
+
+  /**
+   * Seals the queue (for writing) preventing new records to be enqueued
+   */
+  void seal();
+
+  /**
+   * Shuts down the queue, cleaning up the resources
+   */
+  @Override
+  void close();
 }

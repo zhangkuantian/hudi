@@ -25,8 +25,8 @@ import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.view.HoodieTableFileSystemView;
 import org.apache.hudi.exception.HoodieIOException;
 
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -59,8 +59,11 @@ public class HoodieMetadataMetrics implements Serializable {
   public static final String STAT_COUNT_LOG_FILES = "logFileCount";
   public static final String STAT_COUNT_PARTITION = "partitionCount";
   public static final String STAT_LAST_COMPACTION_TIMESTAMP = "lastCompactionTimestamp";
+  public static final String SKIP_TABLE_SERVICES = "skip_table_services";
+  public static final String TABLE_SERVICE_EXECUTION_STATUS = "table_service_execution_status";
+  public static final String TABLE_SERVICE_EXECUTION_DURATION = "table_service_execution_duration";
 
-  private static final Logger LOG = LogManager.getLogger(HoodieMetadataMetrics.class);
+  private static final Logger LOG = LoggerFactory.getLogger(HoodieMetadataMetrics.class);
 
   private final Registry metricsRegistry;
 

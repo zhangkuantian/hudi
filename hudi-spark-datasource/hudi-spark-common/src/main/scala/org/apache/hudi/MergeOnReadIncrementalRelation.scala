@@ -40,13 +40,18 @@ import scala.collection.immutable
 /**
  * @Experimental
  */
-class MergeOnReadIncrementalRelation(sqlContext: SQLContext,
-                                     optParams: Map[String, String],
-                                     userSchema: Option[StructType],
-                                     metaClient: HoodieTableMetaClient)
-  extends MergeOnReadSnapshotRelation(sqlContext, optParams, userSchema, Seq(), metaClient) with HoodieIncrementalRelationTrait {
+case class MergeOnReadIncrementalRelation(override val sqlContext: SQLContext,
+                                          override val optParams: Map[String, String],
+                                          override val metaClient: HoodieTableMetaClient,
+                                          private val userSchema: Option[StructType],
+                                          private val prunedDataSchema: Option[StructType] = None)
+  extends BaseMergeOnReadSnapshotRelation(sqlContext, optParams, metaClient, Seq(), userSchema, prunedDataSchema)
+    with HoodieIncrementalRelationTrait {
 
-  override type FileSplit = HoodieMergeOnReadFileSplit
+  override type Relation = MergeOnReadIncrementalRelation
+
+  override def updatePrunedDataSchema(prunedSchema: StructType): Relation =
+    this.copy(prunedDataSchema = Some(prunedSchema))
 
   override def imbueConfigs(sqlContext: SQLContext): Unit = {
     super.imbueConfigs(sqlContext)
@@ -55,9 +60,11 @@ class MergeOnReadIncrementalRelation(sqlContext: SQLContext,
 
   override protected def timeline: HoodieTimeline = {
     if (fullTableScan) {
-      super.timeline
+      metaClient.getCommitsAndCompactionTimeline
+    } else if (useStateTransitionTime) {
+      metaClient.getCommitsAndCompactionTimeline.findInstantsInRangeByStateTransitionTime(startTimestamp, endTimestamp)
     } else {
-      super.timeline.findInstantsInRange(startTimestamp, endTimestamp)
+      metaClient.getCommitsAndCompactionTimeline.findInstantsInRange(startTimestamp, endTimestamp)
     }
   }
 
@@ -72,7 +79,6 @@ class MergeOnReadIncrementalRelation(sqlContext: SQLContext,
     val optionalFilters = filters
     val readers = createBaseFileReaders(tableSchema, requiredSchema, requestedColumns, requiredFilters, optionalFilters)
 
-    val hoodieTableState = getTableState
     // TODO(HUDI-3639) implement incremental span record filtering w/in RDD to make sure returned iterator is appropriately
     //                 filtered, since file-reader might not be capable to perform filtering
     new HoodieMergeOnReadRDD(
@@ -81,7 +87,7 @@ class MergeOnReadIncrementalRelation(sqlContext: SQLContext,
       fileReaders = readers,
       tableSchema = tableSchema,
       requiredSchema = requiredSchema,
-      tableState = hoodieTableState,
+      tableState = tableState,
       mergeType = mergeType,
       fileSplits = fileSplits)
   }
@@ -129,8 +135,16 @@ trait HoodieIncrementalRelationTrait extends HoodieBaseRelation {
   // Validate this Incremental implementation is properly configured
   validate()
 
+  protected val useStateTransitionTime: Boolean =
+    optParams.get(DataSourceReadOptions.READ_BY_STATE_TRANSITION_TIME.key)
+      .map(_.toBoolean)
+      .getOrElse(DataSourceReadOptions.READ_BY_STATE_TRANSITION_TIME.defaultValue)
+
   protected def startTimestamp: String = optParams(DataSourceReadOptions.BEGIN_INSTANTTIME.key)
-  protected def endTimestamp: String = optParams.getOrElse(DataSourceReadOptions.END_INSTANTTIME.key, super.timeline.lastInstant().get.getTimestamp)
+  protected def endTimestamp: String = optParams.getOrElse(
+    DataSourceReadOptions.END_INSTANTTIME.key,
+    if (useStateTransitionTime) super.timeline.lastInstant().get.getStateTransitionTime
+    else super.timeline.lastInstant().get.getTimestamp)
 
   protected def startInstantArchived: Boolean = super.timeline.isBeforeTimelineStarts(startTimestamp)
   protected def endInstantArchived: Boolean = super.timeline.isBeforeTimelineStarts(endTimestamp)
@@ -150,9 +164,13 @@ trait HoodieIncrementalRelationTrait extends HoodieBaseRelation {
     if (!startInstantArchived || !endInstantArchived) {
       // If endTimestamp commit is not archived, will filter instants
       // before endTimestamp.
-      super.timeline.findInstantsInRange(startTimestamp, endTimestamp).getInstants.iterator().asScala.toList
+      if (useStateTransitionTime) {
+        super.timeline.findInstantsInRangeByStateTransitionTime(startTimestamp, endTimestamp).getInstants.asScala.toList
+      } else {
+        super.timeline.findInstantsInRange(startTimestamp, endTimestamp).getInstants.asScala.toList
+      }
     } else {
-      super.timeline.getInstants.iterator().asScala.toList
+      super.timeline.getInstants.asScala.toList
     }
   }
 
@@ -167,7 +185,11 @@ trait HoodieIncrementalRelationTrait extends HoodieBaseRelation {
   protected lazy val incrementalSpanRecordFilters: Seq[Filter] = {
     val isNotNullFilter = IsNotNull(HoodieRecord.COMMIT_TIME_METADATA_FIELD)
 
-    val largerThanFilter = GreaterThan(HoodieRecord.COMMIT_TIME_METADATA_FIELD, startTimestamp)
+    val largerThanFilter = if (startInstantArchived) {
+      GreaterThan(HoodieRecord.COMMIT_TIME_METADATA_FIELD, startTimestamp)
+    } else {
+      GreaterThanOrEqual(HoodieRecord.COMMIT_TIME_METADATA_FIELD, includedCommits.head.getTimestamp)
+    }
 
     val lessThanFilter = LessThanOrEqual(HoodieRecord.COMMIT_TIME_METADATA_FIELD,
       if (endInstantArchived) endTimestamp else includedCommits.last.getTimestamp)
@@ -194,6 +216,10 @@ trait HoodieIncrementalRelationTrait extends HoodieBaseRelation {
 
     if (!this.tableConfig.populateMetaFields()) {
       throw new HoodieException("Incremental queries are not supported when meta fields are disabled")
+    }
+
+    if (useStateTransitionTime && fullTableScan) {
+      throw new HoodieException("Cannot use stateTransitionTime while enables full table scan")
     }
   }
 

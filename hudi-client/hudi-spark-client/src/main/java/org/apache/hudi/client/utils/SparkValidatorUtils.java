@@ -35,11 +35,11 @@ import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.action.HoodieWriteMetadata;
 import org.apache.hudi.table.action.commit.BaseSparkCommitActionExecutor;
 
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SQLContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
 import java.util.List;
@@ -54,7 +54,7 @@ import scala.collection.JavaConverters;
  * Spark validator utils to verify and run any pre-commit validators configured.
  */
 public class SparkValidatorUtils {
-  private static final Logger LOG = LogManager.getLogger(BaseSparkCommitActionExecutor.class);
+  private static final Logger LOG = LoggerFactory.getLogger(BaseSparkCommitActionExecutor.class);
 
   /**
    * Check configured pre-commit validators and run them. Note that this only works for COW tables
@@ -76,8 +76,8 @@ public class SparkValidatorUtils {
       SQLContext sqlContext = new SQLContext(HoodieSparkEngineContext.getSparkContext(context));
       // Refresh timeline to ensure validator sees the any other operations done on timeline (async operations such as other clustering/compaction/rollback)
       table.getMetaClient().reloadActiveTimeline();
-      Dataset<Row> beforeState = getRecordsFromCommittedFiles(sqlContext, partitionsModified, table).cache();
-      Dataset<Row> afterState  = getRecordsFromPendingCommits(sqlContext, partitionsModified, writeMetadata, table, instantTime).cache();
+      Dataset<Row> beforeState = getRecordsFromCommittedFiles(sqlContext, partitionsModified, table);
+      Dataset<Row> afterState  = getRecordsFromPendingCommits(sqlContext, partitionsModified, writeMetadata, table, instantTime);
 
       Stream<SparkPreCommitValidator> validators = Arrays.stream(config.getPreCommitValidators().split(","))
           .map(validatorClass -> ((SparkPreCommitValidator) ReflectionUtils.loadClass(validatorClass,
@@ -107,7 +107,7 @@ public class SparkValidatorUtils {
         LOG.info("validation complete for " + validator.getClass().getName());
         return true;
       } catch (HoodieValidationException e) {
-        LOG.error("validation failed for " + validator.getClass().getName());
+        LOG.error("validation failed for " + validator.getClass().getName(), e);
         return false;
       }
     });

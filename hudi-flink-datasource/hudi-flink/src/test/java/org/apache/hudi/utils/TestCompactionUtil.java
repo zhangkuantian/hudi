@@ -39,6 +39,8 @@ import org.apache.hudi.util.StreamerUtil;
 import org.apache.flink.configuration.Configuration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.File;
 import java.io.IOException;
@@ -94,15 +96,14 @@ public class TestCompactionUtil {
     List<HoodieInstant> instants = metaClient.getActiveTimeline()
         .filterPendingCompactionTimeline()
         .filter(instant -> instant.getState() == HoodieInstant.State.INFLIGHT)
-        .getInstants()
-        .collect(Collectors.toList());
+        .getInstants();
     assertThat("all the instants should be in pending state", instants.size(), is(3));
     CompactionUtil.rollbackCompaction(table);
-    boolean allRolledBack = metaClient.getActiveTimeline().filterPendingCompactionTimeline().getInstants()
+    boolean allRolledBack = metaClient.getActiveTimeline().filterPendingCompactionTimeline().getInstantsAsStream()
         .allMatch(instant -> instant.getState() == HoodieInstant.State.REQUESTED);
     assertTrue(allRolledBack, "all the instants should be rolled back");
     List<String> actualInstants = metaClient.getActiveTimeline()
-        .filterPendingCompactionTimeline().getInstants().map(HoodieInstant::getTimestamp).collect(Collectors.toList());
+        .filterPendingCompactionTimeline().getInstantsAsStream().map(HoodieInstant::getTimestamp).collect(Collectors.toList());
     assertThat(actualInstants, is(oriInstants));
   }
 
@@ -115,11 +116,10 @@ public class TestCompactionUtil {
     List<HoodieInstant> instants = metaClient.getActiveTimeline()
         .filterPendingCompactionTimeline()
         .filter(instant -> instant.getState() == HoodieInstant.State.INFLIGHT)
-        .getInstants()
-        .collect(Collectors.toList());
+        .getInstants();
     assertThat("all the instants should be in pending state", instants.size(), is(3));
     CompactionUtil.rollbackEarliestCompaction(table, conf);
-    long requestedCnt = metaClient.getActiveTimeline().filterPendingCompactionTimeline().getInstants()
+    long requestedCnt = metaClient.getActiveTimeline().filterPendingCompactionTimeline().getInstantsAsStream()
         .filter(instant -> instant.getState() == HoodieInstant.State.REQUESTED).count();
     assertThat("Only the first instant expects to be rolled back", requestedCnt, is(1L));
 
@@ -154,6 +154,17 @@ public class TestCompactionUtil {
     CompactionUtil.scheduleCompaction(metaClient, writeClient, true, false);
     int numCompactionCommits = metaClient.reloadActiveTimeline().filterPendingCompactionTimeline().countInstants();
     assertThat("Two compaction plan expects to be scheduled", numCompactionCommits, is(2));
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  void testInferMetadataConf(boolean metadataEnabled) throws Exception {
+    Map<String, String> options = new HashMap<>();
+    options.put(FlinkOptions.METADATA_ENABLED.key(), metadataEnabled + "");
+    beforeEach(options);
+    CompactionUtil.inferMetadataConf(this.conf, this.metaClient);
+    assertThat("Metadata table should be disabled after inference",
+        this.conf.getBoolean(FlinkOptions.METADATA_ENABLED), is(metadataEnabled));
   }
 
   /**

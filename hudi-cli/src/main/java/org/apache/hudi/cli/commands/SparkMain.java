@@ -19,8 +19,6 @@
 package org.apache.hudi.cli.commands;
 
 import org.apache.hudi.DataSourceWriteOptions;
-import org.apache.hudi.cli.DeDupeType;
-import org.apache.hudi.cli.DedupeSparkJob;
 import org.apache.hudi.cli.utils.SparkUtil;
 import org.apache.hudi.client.HoodieTimelineArchiver;
 import org.apache.hudi.client.SparkRDDWriteClient;
@@ -65,14 +63,16 @@ import org.apache.hudi.utilities.deltastreamer.HoodieDeltaStreamer;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SQLContext;
 import org.apache.spark.sql.functions;
+import org.apache.spark.sql.hudi.DeDupeType;
+import org.apache.spark.sql.hudi.DedupeSparkJob;
 import org.apache.spark.sql.types.StructType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -93,7 +93,7 @@ import static org.apache.hudi.utilities.UtilHelpers.readConfig;
  */
 public class SparkMain {
 
-  private static final Logger LOG = LogManager.getLogger(SparkMain.class);
+  private static final Logger LOG = LoggerFactory.getLogger(SparkMain.class);
 
   /**
    * Commands.
@@ -320,8 +320,8 @@ public class SparkMain {
   }
 
   protected static int deleteMarker(JavaSparkContext jsc, String instantTime, String basePath) {
-    try {
-      SparkRDDWriteClient client = createHoodieClient(jsc, basePath, false);
+    try (SparkRDDWriteClient client = createHoodieClient(jsc, basePath, false)) {
+
       HoodieWriteConfig config = client.getConfig();
       HoodieEngineContext context = client.getEngineContext();
       HoodieSparkTable table = HoodieSparkTable.create(config, context);
@@ -535,9 +535,9 @@ public class SparkMain {
     properties.setProperty(HoodieBootstrapConfig.BASE_PATH.key(), sourcePath);
 
     if (!StringUtils.isNullOrEmpty(keyGenerator) && KeyGeneratorType.getNames().contains(keyGenerator.toUpperCase(Locale.ROOT))) {
-      properties.setProperty(HoodieBootstrapConfig.KEYGEN_TYPE.key(), keyGenerator.toUpperCase(Locale.ROOT));
+      properties.setProperty(HoodieWriteConfig.KEYGENERATOR_TYPE.key(), keyGenerator.toUpperCase(Locale.ROOT));
     } else {
-      properties.setProperty(HoodieBootstrapConfig.KEYGEN_CLASS_NAME.key(), keyGenerator);
+      properties.setProperty(DataSourceWriteOptions.KEYGENERATOR_CLASS_NAME().key(), keyGenerator);
     }
 
     properties.setProperty(HoodieBootstrapConfig.FULL_BOOTSTRAP_INPUT_PROVIDER_CLASS_NAME.key(), fullBootstrapInputProvider);
@@ -573,8 +573,7 @@ public class SparkMain {
 
   private static int createSavepoint(JavaSparkContext jsc, String commitTime, String user,
                                      String comments, String basePath) throws Exception {
-    SparkRDDWriteClient client = createHoodieClient(jsc, basePath, false);
-    try {
+    try (SparkRDDWriteClient client = createHoodieClient(jsc, basePath, false)) {
       client.savepoint(commitTime, user, comments);
       LOG.info(String.format("The commit \"%s\" has been savepointed.", commitTime));
       return 0;
@@ -585,8 +584,7 @@ public class SparkMain {
   }
 
   private static int rollbackToSavepoint(JavaSparkContext jsc, String savepointTime, String basePath, boolean lazyCleanPolicy) throws Exception {
-    SparkRDDWriteClient client = createHoodieClient(jsc, basePath, lazyCleanPolicy);
-    try {
+    try (SparkRDDWriteClient client = createHoodieClient(jsc, basePath, lazyCleanPolicy)) {
       client.restoreToSavepoint(savepointTime);
       LOG.info(String.format("The commit \"%s\" rolled back.", savepointTime));
       return 0;
@@ -597,8 +595,7 @@ public class SparkMain {
   }
 
   private static int deleteSavepoint(JavaSparkContext jsc, String savepointTime, String basePath) throws Exception {
-    SparkRDDWriteClient client = createHoodieClient(jsc, basePath, false);
-    try {
+    try (SparkRDDWriteClient client = createHoodieClient(jsc, basePath, false)) {
       client.deleteSavepoint(savepointTime);
       LOG.info(String.format("Savepoint \"%s\" deleted.", savepointTime));
       return 0;

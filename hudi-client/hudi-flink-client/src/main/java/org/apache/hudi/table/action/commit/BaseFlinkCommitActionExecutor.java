@@ -23,7 +23,6 @@ import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.model.HoodieCommitMetadata;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
-import org.apache.hudi.common.model.HoodieRecordPayload;
 import org.apache.hudi.common.model.HoodieWriteStat;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
@@ -41,8 +40,8 @@ import org.apache.hudi.io.HoodieWriteHandle;
 import org.apache.hudi.table.HoodieTable;
 import org.apache.hudi.table.action.HoodieWriteMetadata;
 
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -67,10 +66,10 @@ import java.util.stream.Collectors;
  * <p>Computing the records batch locations all at a time is a pressure to the engine,
  * we should avoid that in streaming system.
  */
-public abstract class BaseFlinkCommitActionExecutor<T extends HoodieRecordPayload> extends
+public abstract class BaseFlinkCommitActionExecutor<T> extends
     BaseCommitActionExecutor<T, List<HoodieRecord<T>>, List<HoodieKey>, List<WriteStatus>, HoodieWriteMetadata> {
 
-  private static final Logger LOG = LogManager.getLogger(BaseFlinkCommitActionExecutor.class);
+  private static final Logger LOG = LoggerFactory.getLogger(BaseFlinkCommitActionExecutor.class);
 
   protected HoodieWriteHandle<?, ?, ?, ?> writeHandle;
 
@@ -106,7 +105,6 @@ public abstract class BaseFlinkCommitActionExecutor<T extends HoodieRecordPayloa
         ? BucketType.INSERT
         : BucketType.UPDATE;
     handleUpsertPartition(
-        instantTime,
         partitionPath,
         fileId,
         bucketType,
@@ -164,14 +162,8 @@ public abstract class BaseFlinkCommitActionExecutor<T extends HoodieRecordPayloa
     }
   }
 
-  @Override
-  protected boolean isWorkloadProfileNeeded() {
-    return true;
-  }
-
   @SuppressWarnings("unchecked")
   protected Iterator<List<WriteStatus>> handleUpsertPartition(
-      String instantTime,
       String partitionPath,
       String fileIdHint,
       BucketType bucketType,

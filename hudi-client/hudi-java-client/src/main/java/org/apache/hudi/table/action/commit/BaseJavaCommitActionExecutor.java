@@ -25,7 +25,6 @@ import org.apache.hudi.common.model.HoodieCommitMetadata;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieRecordLocation;
-import org.apache.hudi.common.model.HoodieRecordPayload;
 import org.apache.hudi.common.model.HoodieWriteStat;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
@@ -47,8 +46,8 @@ import org.apache.hudi.table.WorkloadStat;
 import org.apache.hudi.table.action.HoodieWriteMetadata;
 
 import org.apache.hadoop.fs.Path;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -63,10 +62,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-public abstract class BaseJavaCommitActionExecutor<T extends HoodieRecordPayload> extends
+public abstract class BaseJavaCommitActionExecutor<T> extends
     BaseCommitActionExecutor<T, List<HoodieRecord<T>>, List<HoodieKey>, List<WriteStatus>, HoodieWriteMetadata> {
 
-  private static final Logger LOG = LogManager.getLogger(BaseJavaCommitActionExecutor.class);
+  private static final Logger LOG = LoggerFactory.getLogger(BaseJavaCommitActionExecutor.class);
 
   public BaseJavaCommitActionExecutor(HoodieEngineContext context,
                                        HoodieWriteConfig config,
@@ -89,11 +88,9 @@ public abstract class BaseJavaCommitActionExecutor<T extends HoodieRecordPayload
   public HoodieWriteMetadata<List<WriteStatus>> execute(List<HoodieRecord<T>> inputRecords) {
     HoodieWriteMetadata<List<WriteStatus>> result = new HoodieWriteMetadata<>();
 
-    WorkloadProfile workloadProfile = null;
-    if (isWorkloadProfileNeeded()) {
-      workloadProfile = new WorkloadProfile(buildProfile(inputRecords), table.getIndex().canIndexLogFiles());
-      LOG.info("Input workload profile :" + workloadProfile);
-    }
+    WorkloadProfile workloadProfile =
+            new WorkloadProfile(buildProfile(inputRecords), table.getIndex().canIndexLogFiles());
+    LOG.info("Input workload profile :" + workloadProfile);
 
     final Partitioner partitioner = getPartitioner(workloadProfile);
     try {
@@ -225,11 +222,6 @@ public abstract class BaseJavaCommitActionExecutor<T extends HoodieRecordPayload
 
   protected Map<String, List<String>> getPartitionToReplacedFileIds(HoodieWriteMetadata<List<WriteStatus>> writeMetadata) {
     return Collections.emptyMap();
-  }
-
-  @Override
-  protected boolean isWorkloadProfileNeeded() {
-    return true;
   }
 
   @SuppressWarnings("unchecked")

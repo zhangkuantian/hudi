@@ -28,12 +28,14 @@ import org.apache.hudi.cli.utils.InputStreamConsumer;
 import org.apache.hudi.cli.utils.SparkUtil;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieLogFile;
+import org.apache.hudi.common.model.HoodieRecord;
+import org.apache.hudi.common.model.HoodieRecord.HoodieRecordType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.log.HoodieLogFormat;
 import org.apache.hudi.common.table.log.HoodieLogFormat.Reader;
 import org.apache.hudi.common.table.log.block.HoodieAvroDataBlock;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
-import org.apache.hudi.common.util.ClosableIterator;
+import org.apache.hudi.common.util.collection.ClosableIterator;
 import org.apache.hudi.common.util.Option;
 
 import org.apache.avro.generic.GenericRecord;
@@ -41,10 +43,10 @@ import org.apache.avro.generic.IndexedRecord;
 import org.apache.avro.specific.SpecificData;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.apache.spark.launcher.SparkLauncher;
 import org.apache.spark.util.Utils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.shell.standard.ShellComponent;
 import org.springframework.shell.standard.ShellMethod;
 import org.springframework.shell.standard.ShellOption;
@@ -60,7 +62,7 @@ import java.util.stream.Collectors;
  */
 @ShellComponent
 public class ArchivedCommitsCommand {
-  private static final Logger LOG = LogManager.getLogger(ArchivedCommitsCommand.class);
+  private static final Logger LOG = LoggerFactory.getLogger(ArchivedCommitsCommand.class);
   @ShellMethod(key = "trigger archival", value = "trigger archival")
   public String triggerArchival(
       @ShellOption(value = {"--minCommits"},
@@ -118,7 +120,7 @@ public class ArchivedCommitsCommand {
       // read the avro blocks
       while (reader.hasNext()) {
         HoodieAvroDataBlock blk = (HoodieAvroDataBlock) reader.next();
-        blk.getRecordIterator().forEachRemaining(readRecords::add);
+        blk.getRecordIterator(HoodieRecordType.AVRO).forEachRemaining(r -> readRecords.add((IndexedRecord) r.getData()));
       }
       List<Comparable[]> readCommits = readRecords.stream().map(r -> (GenericRecord) r)
           .filter(r -> r.get("actionType").toString().equals(HoodieTimeline.COMMIT_ACTION)
@@ -192,8 +194,8 @@ public class ArchivedCommitsCommand {
       // read the avro blocks
       while (reader.hasNext()) {
         HoodieAvroDataBlock blk = (HoodieAvroDataBlock) reader.next();
-        try (ClosableIterator<IndexedRecord> recordItr = blk.getRecordIterator()) {
-          recordItr.forEachRemaining(readRecords::add);
+        try (ClosableIterator<HoodieRecord<IndexedRecord>> recordItr = blk.getRecordIterator(HoodieRecordType.AVRO)) {
+          recordItr.forEachRemaining(r -> readRecords.add(r.getData()));
         }
       }
       List<Comparable[]> readCommits = readRecords.stream().map(r -> (GenericRecord) r)

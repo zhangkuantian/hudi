@@ -39,8 +39,11 @@ import org.apache.hudi.common.util.ValidationUtils;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.table.HoodieTable;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -53,7 +56,7 @@ import java.util.stream.Collectors;
 import static java.util.stream.Collectors.toList;
 
 public abstract class BaseHoodieCompactionPlanGenerator<T extends HoodieRecordPayload, I, K, O> implements Serializable {
-  private static final Logger LOG = LogManager.getLogger(BaseHoodieCompactionPlanGenerator.class);
+  private static final Logger LOG = LoggerFactory.getLogger(BaseHoodieCompactionPlanGenerator.class);
 
   protected final HoodieTable<T, I, K, O> hoodieTable;
   protected final HoodieWriteConfig writeConfig;
@@ -65,6 +68,7 @@ public abstract class BaseHoodieCompactionPlanGenerator<T extends HoodieRecordPa
     this.engineContext = engineContext;
   }
 
+  @Nullable
   public HoodieCompactionPlan generateCompactionPlan() throws IOException {
     // Accumulator to keep track of total log files for a table
     HoodieAccumulator totalLogFiles = engineContext.newAccumulator();

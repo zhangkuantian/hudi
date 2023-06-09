@@ -29,7 +29,7 @@
   <groupId>org.apache.hudi</groupId>
   <artifactId>hudi</artifactId>
   <packaging>pom</packaging>
-  <version>0.13.0-SNAPSHOT</version>
+  <version>0.14.0-SNAPSHOT</version>
   <description>Apache Hudi brings stream style processing on big data</description>
   <url>https://github.com/apache/hudi</url>
   <name>Hudi</name>
@@ -61,6 +61,7 @@
     <module>hudi-kafka-connect</module>
     <module>packaging/hudi-flink-bundle</module>
     <module>packaging/hudi-kafka-connect-bundle</module>
+    <module>packaging/hudi-cli-bundle</module>
     <module>hudi-tests-common</module>
   </modules>
 
@@ -88,18 +89,21 @@
     <genjavadoc-plugin.version>0.15</genjavadoc-plugin.version>
     <build-helper-maven-plugin.version>1.7</build-helper-maven-plugin.version>
     <maven-enforcer-plugin.version>3.0.0-M1</maven-enforcer-plugin.version>
-    <maven-docker-plugin.version>0.37.0</maven-docker-plugin.version>
+    <maven-docker-plugin.version>0.42.1</maven-docker-plugin.version>
 
     <java.version>1.8</java.version>
-    <fasterxml.version>2.6.7</fasterxml.version>
-    <fasterxml.jackson.databind.version>2.6.7.3</fasterxml.jackson.databind.version>
-    <fasterxml.jackson.module.scala.version>2.6.7.1</fasterxml.jackson.module.scala.version>
-    <fasterxml.jackson.dataformat.yaml.version>2.7.4</fasterxml.jackson.dataformat.yaml.version>
+    <kryo.shaded.version>4.0.2</kryo.shaded.version>
     <fasterxml.spark3.version>2.10.0</fasterxml.spark3.version>
+    <fasterxml.version>${fasterxml.spark3.version}</fasterxml.version>
+    <fasterxml.jackson.databind.version>${fasterxml.spark3.version}</fasterxml.jackson.databind.version>
+    <fasterxml.jackson.module.scala.version>${fasterxml.spark3.version}</fasterxml.jackson.module.scala.version>
+    <fasterxml.jackson.dataformat.yaml.version>${fasterxml.spark3.version}</fasterxml.jackson.dataformat.yaml.version>
+    <!-- NOTE: By default we're not including JSR310 module for Jackson since Spark >= 3.x is bundling it anyway -->
+    <fasterxml.jackson.datatype.jsr310.module/>
     <kafka.version>2.0.0</kafka.version>
-    <kafka.spark3.version>2.4.1</kafka.spark3.version>
+    <kafka.spark3.version>2.8.0</kafka.spark3.version>
     <pulsar.version>2.8.1</pulsar.version>
-    <pulsar.spark.version>${pulsar.spark.scala11.version}</pulsar.spark.version>
+    <pulsar.spark.version>${pulsar.spark.scala12.version}</pulsar.spark.version>
     <pulsar.spark.scala11.version>2.4.5</pulsar.spark.scala11.version>
     <pulsar.spark.scala12.version>3.1.1.4</pulsar.spark.scala12.version>
     <confluent.version>5.3.4</confluent.version>
@@ -127,16 +131,20 @@
     <airlift.version>0.16</airlift.version>
     <prometheus.version>0.8.0</prometheus.version>
     <http.version>4.4.1</http.version>
-    <spark.version>${spark2.version}</spark.version>
+    <spark.version>${spark3.version}</spark.version>
     <spark2.version>2.4.4</spark2.version>
-    <spark3.version>3.3.0</spark3.version>
+    <spark3.version>3.3.1</spark3.version>
     <sparkbundle.version></sparkbundle.version>
+    <flink1.17.version>1.17.1</flink1.17.version>
+    <flink1.16.version>1.16.2</flink1.16.version>
     <flink1.15.version>1.15.1</flink1.15.version>
     <flink1.14.version>1.14.5</flink1.14.version>
     <flink1.13.version>1.13.6</flink1.13.version>
-    <flink.version>${flink1.15.version}</flink.version>
-    <hudi.flink.module>hudi-flink1.15.x</hudi.flink.module>
-    <flink.bundle.version>1.15</flink.bundle.version>
+    <flink.version>${flink1.17.version}</flink.version>
+    <hudi.flink.module>hudi-flink1.17.x</hudi.flink.module>
+    <flink.bundle.version>1.17</flink.bundle.version>
+    <!-- This is fixed to match with version from flink-avro -->
+    <flink.avro.version>1.11.1</flink.avro.version>
     <flink.format.parquet.version>1.12.2</flink.format.parquet.version>
     <flink.runtime.artifactId>flink-runtime</flink.runtime.artifactId>
     <flink.table.runtime.artifactId>flink-table-runtime</flink.table.runtime.artifactId>
@@ -149,26 +157,29 @@
     <flink.connector.kafka.artifactId>flink-connector-kafka</flink.connector.kafka.artifactId>
     <flink.hadoop.compatibility.artifactId>flink-hadoop-compatibility_2.12</flink.hadoop.compatibility.artifactId>
     <rocksdbjni.version>5.17.2</rocksdbjni.version>
+    <spark30.version>3.0.2</spark30.version>
     <spark31.version>3.1.3</spark31.version>
-    <spark32.version>3.2.2</spark32.version>
-    <spark33.version>3.3.0</spark33.version>
-    <hudi.spark.module>hudi-spark2</hudi.spark.module>
+    <spark32.version>3.2.3</spark32.version>
+    <spark33.version>3.3.1</spark33.version>
+    <hudi.spark.module>hudi-spark3.2.x</hudi.spark.module>
     <!-- NOTE: Different Spark versions might require different number of shared
                modules being incorporated, hence we're creating multiple placeholders
                (hudi.spark.common.modules.*) -->
-    <hudi.spark.common.modules.1>hudi-spark2-common</hudi.spark.common.modules.1>
-    <hudi.spark.common.modules.2/>
+    <hudi.spark.common.modules.1>hudi-spark3-common</hudi.spark.common.modules.1>
+    <hudi.spark.common.modules.2>hudi-spark3.2plus-common</hudi.spark.common.modules.2>
     <avro.version>1.8.2</avro.version>
     <caffeine.version>2.9.1</caffeine.version>
+    <commons.io.version>2.11.0</commons.io.version>
     <scala11.version>2.11.12</scala11.version>
     <scala12.version>2.12.10</scala12.version>
-    <scala.version>${scala11.version}</scala.version>
+    <scala.version>${scala12.version}</scala.version>
     <scala.collection-compat.version>2.8.1</scala.collection-compat.version>
-    <scala.binary.version>2.11</scala.binary.version>
+    <scala.binary.version>2.12</scala.binary.version>
     <apache-rat-plugin.version>0.13</apache-rat-plugin.version>
     <scala-maven-plugin.version>3.3.1</scala-maven-plugin.version>
-    <scalatest.version>3.0.1</scalatest.version>
+    <scalatest.spark_pre31.version>3.0.1</scalatest.spark_pre31.version>
     <scalatest.spark3.version>3.1.0</scalatest.spark3.version>
+    <scalatest.version>${scalatest.spark3.version}</scalatest.version>
     <surefire-log4j.file>log4j2-surefire.properties</surefire-log4j.file>
     <thrift.version>0.12.0</thrift.version>
     <javalin.version>4.6.7</javalin.version>
@@ -199,9 +210,9 @@
     <shadeSources>true</shadeSources>
     <zk-curator.version>2.7.1</zk-curator.version>
     <disruptor.version>3.4.2</disruptor.version>
-    <antlr.version>4.7</antlr.version>
+    <antlr.version>4.8</antlr.version>
     <aws.sdk.version>1.12.22</aws.sdk.version>
-    <proto.version>3.21.5</proto.version>
+    <proto.version>3.21.7</proto.version>
     <protoc.version>3.21.5</protoc.version>
     <dynamodb.lockclient.version>1.1.0</dynamodb.lockclient.version>
     <zookeeper.version>3.5.7</zookeeper.version>
@@ -275,7 +286,8 @@
           </dependency>
         </dependencies>
         <configuration>
-          <consoleOutput>true</consoleOutput>
+          <!-- Set consoleOutput to true to see minor checkstyle issues -->
+          <consoleOutput>false</consoleOutput>
           <encoding>UTF-8</encoding>
           <configLocation>style/checkstyle.xml</configLocation>
           <suppressionsLocation>style/checkstyle-suppressions.xml</suppressionsLocation>
@@ -288,7 +300,7 @@
           </sourceDirectories>
           <!-- NOTE: This property is only available in Maven >= 3.3.1 -->
           <propertyExpansion>basedir=${maven.multiModuleProjectDirectory}</propertyExpansion>
-          <excludes>**\/generated-sources\/</excludes>
+          <excludes>**\/generated-sources\/,org/apache/hudi/metaserver/thrift/*</excludes>
         </configuration>
         <executions>
           <execution>
@@ -435,38 +447,118 @@
           <!-- common to all bundles -->
           <artifactSet>
             <includes>
-              <!-- com.esotericsoftware:kryo-shaded -->
-              <include>com.esotericsoftware:kryo-shaded</include>
-              <include>com.esotericsoftware:minlog</include>
-              <include>org.objenesis:objenesis</include>
               <!-- org.apache.httpcomponents -->
               <include>org.apache.httpcomponents:httpclient</include>
               <include>org.apache.httpcomponents:httpcore</include>
               <include>org.apache.httpcomponents:fluent-hc</include>
+              <!-- hbase -->
+              <include>org.apache.hbase:hbase-client</include>
+              <include>org.apache.hbase:hbase-common</include>
+              <include>org.apache.hbase:hbase-hadoop-compat</include>
+              <include>org.apache.hbase:hbase-hadoop2-compat</include>
+              <include>org.apache.hbase:hbase-metrics</include>
+              <include>org.apache.hbase:hbase-metrics-api</include>
+              <include>org.apache.hbase:hbase-protocol</include>
+              <include>org.apache.hbase:hbase-protocol-shaded</include>
+              <include>org.apache.hbase:hbase-server</include>
+              <include>org.apache.hbase.thirdparty:hbase-shaded-miscellaneous</include>
+              <include>org.apache.hbase.thirdparty:hbase-shaded-netty</include>
+              <include>org.apache.hbase.thirdparty:hbase-shaded-protobuf</include>
+              <include>org.apache.htrace:htrace-core4</include>
             </includes>
           </artifactSet>
           <relocations>
-            <!-- com.esotericsoftware:kryo-shaded -->
-            <relocation>
-              <pattern>com.esotericsoftware.kryo.</pattern>
-              <shadedPattern>org.apache.hudi.com.esotericsoftware.kryo.</shadedPattern>
-            </relocation>
-            <relocation>
-              <pattern>com.esotericsoftware.reflectasm.</pattern>
-              <shadedPattern>org.apache.hudi.com.esotericsoftware.reflectasm.</shadedPattern>
-            </relocation>
-            <relocation>
-              <pattern>com.esotericsoftware.minlog.</pattern>
-              <shadedPattern>org.apache.hudi.com.esotericsoftware.minlog.</shadedPattern>
-            </relocation>
-            <relocation>
-              <pattern>org.objenesis.</pattern>
-              <shadedPattern>org.apache.hudi.org.objenesis.</shadedPattern>
-            </relocation>
             <!-- org.apache.httpcomponents -->
             <relocation>
               <pattern>org.apache.http.</pattern>
               <shadedPattern>org.apache.hudi.org.apache.http.</shadedPattern>
+            </relocation>
+            <!-- hbase -->
+            <relocation>
+              <pattern>org.apache.hadoop.hbase.</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.hbase.</shadedPattern>
+              <excludes>
+                <exclude>org.apache.hadoop.hbase.KeyValue$KeyComparator</exclude>
+              </excludes>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hbase.</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hbase.</shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.htrace.</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.htrace.</shadedPattern>
+            </relocation>
+            <!-- hbase
+                 The classes below in org.apache.hadoop.metrics2 package come from
+                 hbase-hadoop-compat and hbase-hadoop2-compat, which have to be shaded one by one,
+                 instead of shading all classes under org.apache.hadoop.metrics2 including ones
+                 from hadoop. -->
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.MetricHistogram</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.MetricHistogram
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.MetricsExecutor</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.MetricsExecutor
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.impl.JmxCacheBuster</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.impl.JmxCacheBuster
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.lib.DefaultMetricsSystemHelper</pattern>
+              <shadedPattern>
+                org.apache.hudi.org.apache.hadoop.metrics2.lib.DefaultMetricsSystemHelper
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.lib.DynamicMetricsRegistry</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.lib.DynamicMetricsRegistry
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.lib.MetricsExecutorImpl</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.lib.MetricsExecutorImpl
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.lib.MutableFastCounter</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.lib.MutableFastCounter
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.lib.MutableHistogram</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.lib.MutableHistogram
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.lib.MutableRangeHistogram</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.lib.MutableRangeHistogram
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.lib.MutableSizeHistogram</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.lib.MutableSizeHistogram
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.lib.MutableTimeHistogram</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.lib.MutableTimeHistogram
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.util.MetricQuantile</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.util.MetricQuantile
+              </shadedPattern>
+            </relocation>
+            <relocation>
+              <pattern>org.apache.hadoop.metrics2.util.MetricSampleQuantiles</pattern>
+              <shadedPattern>org.apache.hudi.org.apache.hadoop.metrics2.util.MetricSampleQuantiles
+              </shadedPattern>
             </relocation>
           </relocations>
         </configuration>
@@ -492,7 +584,7 @@
         <plugin>
           <groupId>org.scalatest</groupId>
           <artifactId>scalatest-maven-plugin</artifactId>
-          <version>1.0</version>
+          <version>2.2.0</version>
           <configuration>
             <skipTests>${skipUTs}</skipTests>
             <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
@@ -675,6 +767,7 @@
             </execution>
           </executions>
           <configuration>
+            <protocArtifact>com.google.protobuf:protoc:${proto.version}</protocArtifact>
             <protocVersion>${protoc.version}</protocVersion>
             <includeStdTypes>true</includeStdTypes>
           </configuration>
@@ -759,6 +852,12 @@
       <dependency>
         <groupId>com.fasterxml.jackson.datatype</groupId>
         <artifactId>jackson-datatype-guava</artifactId>
+        <version>${fasterxml.version}</version>
+      </dependency>
+      <!-- This one is necessary to support Java 8 Date/Time types (required for Jackson >= 2.13) -->
+      <dependency>
+        <groupId>com.fasterxml.jackson.datatype</groupId>
+        <artifactId>jackson-datatype-jsr310</artifactId>
         <version>${fasterxml.version}</version>
       </dependency>
       <dependency>
@@ -868,6 +967,12 @@
         <artifactId>spark-hive_${scala.binary.version}</artifactId>
         <version>${spark.version}</version>
         <scope>provided</scope>
+        <exclusions>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>apache-log4j-extras</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>org.apache.spark</groupId>
@@ -899,6 +1004,19 @@
         <classifier>tests</classifier>
         <version>${spark.version}</version>
         <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-hive_${scala.binary.version}</artifactId>
+        <classifier>tests</classifier>
+        <version>${spark.version}</version>
+        <scope>test</scope>
+        <exclusions>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>apache-log4j-extras</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
 
       <!-- Flink -->
@@ -1358,6 +1476,10 @@
             <artifactId>log4j</artifactId>
           </exclusion>
           <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>apache-log4j-extras</artifactId>
+          </exclusion>
+          <exclusion>
             <groupId>org.apache.hbase</groupId>
             <artifactId>*</artifactId>
           </exclusion>
@@ -1408,6 +1530,10 @@
           <exclusion>
             <groupId>log4j</groupId>
             <artifactId>log4j</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>log4j</groupId>
+            <artifactId>apache-log4j-extras</artifactId>
           </exclusion>
           <exclusion>
             <groupId>org.apache.hbase</groupId>
@@ -1519,6 +1645,14 @@
         <scope>test</scope>
       </dependency>
 
+      <!-- Kryo -->
+      <dependency>
+        <groupId>com.esotericsoftware</groupId>
+        <artifactId>kryo-shaded</artifactId>
+        <version>${kryo.shaded.version}</version>
+        <scope>provided</scope>
+      </dependency>
+
       <dependency>
         <!--Used to test execution in task executor after de-serializing-->
         <groupId>com.esotericsoftware</groupId>
@@ -1529,19 +1663,6 @@
 
       <!-- Other Utils -->
       <dependency>
-        <groupId>org.awaitility</groupId>
-        <artifactId>awaitility</artifactId>
-        <version>${awaitility.version}</version>
-        <scope>test</scope>
-        <exclusions>
-          <exclusion>
-            <groupId>org.objenesis</groupId>
-            <artifactId>objenesis</artifactId>
-          </exclusion>
-        </exclusions>
-      </dependency>
-
-      <dependency>
         <groupId>org.apache.flink</groupId>
         <artifactId>flink-test-utils_${scala.binary.version}</artifactId>
         <version>${flink.version}</version>
@@ -1549,6 +1670,10 @@
         <exclusions>
           <exclusion>
             <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.junit.jupiter</groupId>
             <artifactId>*</artifactId>
           </exclusion>
         </exclusions>
@@ -1778,6 +1903,19 @@
       </build>
     </profile>
     <profile>
+      <id>hudi-platform-service</id>
+      <activation>
+        <property>
+          <name>deployArtifacts</name>
+          <value>true</value>
+        </property>
+      </activation>
+      <modules>
+        <module>hudi-platform-service</module>
+        <module>packaging/hudi-metaserver-server-bundle</module>
+      </modules>
+    </profile>
+    <profile>
       <id>integration-tests</id>
       <activation>
         <property>
@@ -1832,27 +1970,6 @@
                 <goals>
                   <goal>verify</goal>
                 </goals>
-              </execution>
-            </executions>
-          </plugin>
-          <plugin>
-            <groupId>org.jacoco</groupId>
-            <artifactId>jacoco-maven-plugin</artifactId>
-            <executions>
-              <execution>
-                <goals>
-                  <goal>prepare-agent</goal>
-                </goals>
-              </execution>
-              <execution>
-                <id>post-integration-tests</id>
-                <phase>test</phase>
-                <goals>
-                  <goal>report</goal>
-                </goals>
-                <configuration>
-                  <outputDirectory>${project.reporting.outputDirectory}/jacoco-it</outputDirectory>
-                </configuration>
               </execution>
             </executions>
           </plugin>
@@ -1968,12 +2085,18 @@
         </plugins>
       </build>
     </profile>
-    <!-- Exists for backwards compatibility; profile doesn't do anything -->
     <profile>
       <id>scala-2.11</id>
       <properties>
+        <scala.version>${scala11.version}</scala.version>
+        <scala.binary.version>2.11</scala.binary.version>
         <pulsar.spark.version>${pulsar.spark.scala11.version}</pulsar.spark.version>
       </properties>
+      <activation>
+        <property>
+          <name>scala-2.11</name>
+        </property>
+      </activation>
     </profile>
     <profile>
       <id>scala-2.12</id>
@@ -2015,7 +2138,7 @@
       </build>
     </profile>
 
-    <!-- Default is "spark2" profile, and "spark2" is an alias of "spark2.4" -->
+    <!-- "spark2" is an alias of "spark2.4" -->
     <!-- NOTE: This profile is deprecated and soon will be removed -->
     <profile>
       <id>spark2</id>
@@ -2024,14 +2147,29 @@
         <module>hudi-spark-datasource/hudi-spark2-common</module>
       </modules>
       <properties>
+        <spark.version>${spark2.version}</spark.version>
+        <sparkbundle.version/>
+        <scalatest.version>${scalatest.spark_pre31.version}</scalatest.version>
+        <hudi.spark.module>hudi-spark2</hudi.spark.module>
+        <hudi.spark.common.modules.1>hudi-spark2-common</hudi.spark.common.modules.1>
+        <hudi.spark.common.modules.2/>
+        <kafka.version>2.0.0</kafka.version>
+        <parquet.version>1.10.1</parquet.version>
+        <orc.spark.version>1.6.0</orc.spark.version>
+        <avro.version>1.8.2</avro.version>
+        <antlr.version>4.7</antlr.version>
+        <fasterxml.version>2.6.7</fasterxml.version>
+        <fasterxml.jackson.databind.version>2.6.7.3</fasterxml.jackson.databind.version>
+        <fasterxml.jackson.module.scala.version>2.6.7.1</fasterxml.jackson.module.scala.version>
+        <fasterxml.jackson.dataformat.yaml.version>2.7.4</fasterxml.jackson.dataformat.yaml.version>
+        <fasterxml.jackson.datatype.jsr310.module>jackson-datatype-jsr310</fasterxml.jackson.datatype.jsr310.module>
+        <pulsar.spark.version>${pulsar.spark.scala11.version}</pulsar.spark.version>
         <skip.hudi-spark3.unit.tests>true</skip.hudi-spark3.unit.tests>
+        <skipITs>true</skipITs>
       </properties>
       <activation>
-        <activeByDefault>true</activeByDefault>
         <property>
           <name>spark2</name>
-          <!-- add spark2 moudule to all profile -->
-          <value>!disabled</value>
         </property>
       </activation>
     </profile>
@@ -2043,8 +2181,25 @@
         <module>hudi-spark-datasource/hudi-spark2-common</module>
       </modules>
       <properties>
+        <spark.version>${spark2.version}</spark.version>
         <sparkbundle.version>2.4</sparkbundle.version>
+        <scalatest.version>${scalatest.spark_pre31.version}</scalatest.version>
+        <hudi.spark.module>hudi-spark2</hudi.spark.module>
+        <hudi.spark.common.modules.1>hudi-spark2-common</hudi.spark.common.modules.1>
+        <hudi.spark.common.modules.2/>
+        <kafka.version>2.0.0</kafka.version>
+        <parquet.version>1.10.1</parquet.version>
+        <orc.spark.version>1.6.0</orc.spark.version>
+        <avro.version>1.8.2</avro.version>
+        <antlr.version>4.7</antlr.version>
+        <fasterxml.version>2.6.7</fasterxml.version>
+        <fasterxml.jackson.databind.version>2.6.7.3</fasterxml.jackson.databind.version>
+        <fasterxml.jackson.module.scala.version>2.6.7.1</fasterxml.jackson.module.scala.version>
+        <fasterxml.jackson.dataformat.yaml.version>2.7.4</fasterxml.jackson.dataformat.yaml.version>
+        <fasterxml.jackson.datatype.jsr310.module>jackson-datatype-jsr310</fasterxml.jackson.datatype.jsr310.module>
+        <pulsar.spark.version>${pulsar.spark.scala11.version}</pulsar.spark.version>
         <skip.hudi-spark3.unit.tests>true</skip.hudi-spark3.unit.tests>
+        <skipITs>false</skipITs>
       </properties>
       <activation>
         <property>
@@ -2071,23 +2226,24 @@
     <profile>
       <id>spark3</id>
       <properties>
-        <spark3.version>3.3.0</spark3.version>
+        <spark3.version>${spark33.version}</spark3.version>
         <spark.version>${spark3.version}</spark.version>
         <sparkbundle.version>3</sparkbundle.version>
+        <scala12.version>2.12.15</scala12.version>
         <scala.version>${scala12.version}</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
+        <scalatest.version>${scalatest.spark3.version}</scalatest.version>
         <hudi.spark.module>hudi-spark3.3.x</hudi.spark.module>
         <!-- This glob has to include hudi-spark3-common, hudi-spark3.2plus-common -->
         <hudi.spark.common.modules.1>hudi-spark3-common</hudi.spark.common.modules.1>
         <hudi.spark.common.modules.2>hudi-spark3.2plus-common</hudi.spark.common.modules.2>
-        <scalatest.version>${scalatest.spark3.version}</scalatest.version>
         <kafka.version>${kafka.spark3.version}</kafka.version>
         <!-- NOTE: Some Hudi modules require standalone Parquet/Orc/etc file-format dependency (hudi-hive-sync,
                    hudi-hadoop-mr, for ex). Since these Hudi modules might be used from w/in the execution engine(s)
                    bringing these file-formats as dependencies as well, we need to make sure that versions are
                    synchronized to avoid classpath ambiguity -->
         <parquet.version>1.12.2</parquet.version>
-        <orc.spark.version>1.7.4</orc.spark.version>
+        <orc.spark.version>1.7.8</orc.spark.version>
         <avro.version>1.11.1</avro.version>
         <antlr.version>4.8</antlr.version>
         <fasterxml.spark3.version>2.13.3</fasterxml.spark3.version>
@@ -2095,6 +2251,8 @@
         <fasterxml.jackson.databind.version>${fasterxml.spark3.version}</fasterxml.jackson.databind.version>
         <fasterxml.jackson.module.scala.version>${fasterxml.spark3.version}</fasterxml.jackson.module.scala.version>
         <fasterxml.jackson.dataformat.yaml.version>${fasterxml.spark3.version}</fasterxml.jackson.dataformat.yaml.version>
+        <!-- NOTE: By default we're not including JSR310 module for Jackson since Spark >= 3.x is bundling it anyway -->
+        <fasterxml.jackson.datatype.jsr310.module/>
         <pulsar.spark.version>${pulsar.spark.scala12.version}</pulsar.spark.version>
         <skip.hudi-spark2.unit.tests>true</skip.hudi-spark2.unit.tests>
         <skipITs>true</skipITs>
@@ -2112,16 +2270,17 @@
     </profile>
 
     <profile>
-      <id>spark3.1</id>
+      <id>spark3.0</id>
       <properties>
-        <spark3.version>3.1.3</spark3.version>
+        <spark3.version>${spark30.version}</spark3.version>
         <spark.version>${spark3.version}</spark.version>
-        <sparkbundle.version>3.1</sparkbundle.version>
+        <sparkbundle.version>3.0</sparkbundle.version>
         <scala.version>${scala12.version}</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
-        <hudi.spark.module>hudi-spark3.1.x</hudi.spark.module>
+        <scalatest.version>${scalatest.spark_pre31.version}</scalatest.version>
+        <hudi.spark.module>hudi-spark3.0.x</hudi.spark.module>
         <hudi.spark.common.modules.1>hudi-spark3-common</hudi.spark.common.modules.1>
-        <scalatest.version>${scalatest.spark3.version}</scalatest.version>
+        <hudi.spark.common.modules.2/>
         <kafka.version>${kafka.spark3.version}</kafka.version>
         <!-- NOTE: Some Hudi modules require standalone Parquet/Orc/etc file-format dependency (hudi-hive-sync,
                    hudi-hadoop-mr, for ex). Since these Hudi modules might be used from w/in the execution engine(s)
@@ -2135,6 +2294,50 @@
         <fasterxml.jackson.databind.version>${fasterxml.spark3.version}</fasterxml.jackson.databind.version>
         <fasterxml.jackson.module.scala.version>${fasterxml.spark3.version}</fasterxml.jackson.module.scala.version>
         <fasterxml.jackson.dataformat.yaml.version>${fasterxml.spark3.version}</fasterxml.jackson.dataformat.yaml.version>
+        <!-- NOTE: By default we're not including JSR310 module for Jackson since Spark >= 3.x is bundling it anyway -->
+        <fasterxml.jackson.datatype.jsr310.module/>
+        <pulsar.spark.version>${pulsar.spark.scala12.version}</pulsar.spark.version>
+        <skip.hudi-spark2.unit.tests>true</skip.hudi-spark2.unit.tests>
+        <skipITs>true</skipITs>
+      </properties>
+      <modules>
+        <module>hudi-spark-datasource/hudi-spark3.0.x</module>
+        <module>hudi-spark-datasource/hudi-spark3-common</module>
+      </modules>
+      <activation>
+        <property>
+          <name>spark3.0</name>
+        </property>
+      </activation>
+    </profile>
+
+    <profile>
+      <id>spark3.1</id>
+      <properties>
+        <spark3.version>${spark31.version}</spark3.version>
+        <spark.version>${spark3.version}</spark.version>
+        <sparkbundle.version>3.1</sparkbundle.version>
+        <scala.version>${scala12.version}</scala.version>
+        <scala.binary.version>2.12</scala.binary.version>
+        <scalatest.version>${scalatest.spark3.version}</scalatest.version>
+        <hudi.spark.module>hudi-spark3.1.x</hudi.spark.module>
+        <hudi.spark.common.modules.1>hudi-spark3-common</hudi.spark.common.modules.1>
+        <hudi.spark.common.modules.2/>
+        <kafka.version>${kafka.spark3.version}</kafka.version>
+        <!-- NOTE: Some Hudi modules require standalone Parquet/Orc/etc file-format dependency (hudi-hive-sync,
+                   hudi-hadoop-mr, for ex). Since these Hudi modules might be used from w/in the execution engine(s)
+                   bringing these file-formats as dependencies as well, we need to make sure that versions are
+                   synchronized to avoid classpath ambiguity -->
+        <parquet.version>1.10.1</parquet.version>
+        <orc.spark.version>1.5.13</orc.spark.version>
+        <avro.version>1.8.2</avro.version>
+        <antlr.version>4.8-1</antlr.version>
+        <fasterxml.version>${fasterxml.spark3.version}</fasterxml.version>
+        <fasterxml.jackson.databind.version>${fasterxml.spark3.version}</fasterxml.jackson.databind.version>
+        <fasterxml.jackson.module.scala.version>${fasterxml.spark3.version}</fasterxml.jackson.module.scala.version>
+        <fasterxml.jackson.dataformat.yaml.version>${fasterxml.spark3.version}</fasterxml.jackson.dataformat.yaml.version>
+        <!-- NOTE: By default we're not including JSR310 module for Jackson since Spark >= 3.x is bundling it anyway -->
+        <fasterxml.jackson.datatype.jsr310.module/>
         <pulsar.spark.version>${pulsar.spark.scala12.version}</pulsar.spark.version>
         <skip.hudi-spark2.unit.tests>true</skip.hudi-spark2.unit.tests>
         <skipITs>true</skipITs>
@@ -2153,16 +2356,16 @@
     <profile>
       <id>spark3.2</id>
       <properties>
-        <spark3.version>3.2.1</spark3.version>
+        <spark3.version>${spark32.version}</spark3.version>
         <spark.version>${spark3.version}</spark.version>
         <sparkbundle.version>3.2</sparkbundle.version>
         <scala.version>${scala12.version}</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
+        <scalatest.version>${scalatest.spark3.version}</scalatest.version>
         <hudi.spark.module>hudi-spark3.2.x</hudi.spark.module>
         <!-- This glob has to include hudi-spark3-common, hudi-spark3.2plus-common -->
         <hudi.spark.common.modules.1>hudi-spark3-common</hudi.spark.common.modules.1>
         <hudi.spark.common.modules.2>hudi-spark3.2plus-common</hudi.spark.common.modules.2>
-        <scalatest.version>${scalatest.spark3.version}</scalatest.version>
         <kafka.version>${kafka.spark3.version}</kafka.version>
         <!-- NOTE: Some Hudi modules require standalone Parquet/Orc/etc file-format dependency (hudi-hive-sync,
                    hudi-hadoop-mr, for ex). Since these Hudi modules might be used from w/in the execution engine(s)
@@ -2176,6 +2379,8 @@
         <fasterxml.jackson.databind.version>${fasterxml.spark3.version}</fasterxml.jackson.databind.version>
         <fasterxml.jackson.module.scala.version>${fasterxml.spark3.version}</fasterxml.jackson.module.scala.version>
         <fasterxml.jackson.dataformat.yaml.version>${fasterxml.spark3.version}</fasterxml.jackson.dataformat.yaml.version>
+        <!-- NOTE: By default we're not including JSR310 module for Jackson since Spark >= 3.x is bundling it anyway -->
+        <fasterxml.jackson.datatype.jsr310.module/>
         <pulsar.spark.version>${pulsar.spark.scala12.version}</pulsar.spark.version>
         <skip.hudi-spark2.unit.tests>true</skip.hudi-spark2.unit.tests>
         <skipITs>true</skipITs>
@@ -2186,6 +2391,7 @@
         <module>hudi-spark-datasource/hudi-spark3.2plus-common</module>
       </modules>
       <activation>
+        <activeByDefault>true</activeByDefault>
         <property>
           <name>spark3.2</name>
         </property>
@@ -2195,23 +2401,24 @@
     <profile>
       <id>spark3.3</id>
       <properties>
-        <spark3.version>3.3.0</spark3.version>
+        <spark3.version>${spark33.version}</spark3.version>
         <spark.version>${spark3.version}</spark.version>
         <sparkbundle.version>3.3</sparkbundle.version>
+        <scala12.version>2.12.15</scala12.version>
         <scala.version>${scala12.version}</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
+        <scalatest.version>${scalatest.spark3.version}</scalatest.version>
         <hudi.spark.module>hudi-spark3.3.x</hudi.spark.module>
         <!-- This glob has to include hudi-spark3-common, hudi-spark3.2plus-common -->
         <hudi.spark.common.modules.1>hudi-spark3-common</hudi.spark.common.modules.1>
         <hudi.spark.common.modules.2>hudi-spark3.2plus-common</hudi.spark.common.modules.2>
-        <scalatest.version>${scalatest.spark3.version}</scalatest.version>
         <kafka.version>${kafka.spark3.version}</kafka.version>
         <!-- NOTE: Some Hudi modules require standalone Parquet/Orc/etc file-format dependency (hudi-hive-sync,
                    hudi-hadoop-mr, for ex). Since these Hudi modules might be used from w/in the execution engine(s)
                    bringing these file-formats as dependencies as well, we need to make sure that versions are
                    synchronized to avoid classpath ambiguity -->
         <parquet.version>1.12.2</parquet.version>
-        <orc.spark.version>1.7.4</orc.spark.version>
+        <orc.spark.version>1.7.8</orc.spark.version>
         <avro.version>1.11.1</avro.version>
         <antlr.version>4.8</antlr.version>
         <fasterxml.spark3.version>2.13.3</fasterxml.spark3.version>
@@ -2219,6 +2426,8 @@
         <fasterxml.jackson.databind.version>${fasterxml.spark3.version}</fasterxml.jackson.databind.version>
         <fasterxml.jackson.module.scala.version>${fasterxml.spark3.version}</fasterxml.jackson.module.scala.version>
         <fasterxml.jackson.dataformat.yaml.version>${fasterxml.spark3.version}</fasterxml.jackson.dataformat.yaml.version>
+        <!-- NOTE: By default we're not including JSR310 module for Jackson since Spark >= 3.x is bundling it anyway -->
+        <fasterxml.jackson.datatype.jsr310.module/>
         <pulsar.spark.version>${pulsar.spark.scala12.version}</pulsar.spark.version>
         <skip.hudi-spark2.unit.tests>true</skip.hudi-spark2.unit.tests>
         <skipITs>true</skipITs>
@@ -2236,9 +2445,40 @@
     </profile>
 
     <profile>
-      <id>flink1.15</id>
+      <id>flink1.17</id>
       <properties>
         <orc.flink.version>1.5.6</orc.flink.version>
+        <flink.avro.version>1.11.1</flink.avro.version>
+      </properties>
+      <activation>
+        <property>
+          <name>flink1.17</name>
+        </property>
+      </activation>
+    </profile>
+    <profile>
+      <id>flink1.16</id>
+      <properties>
+        <flink.version>${flink1.16.version}</flink.version>
+        <hudi.flink.module>hudi-flink1.16.x</hudi.flink.module>
+        <flink.bundle.version>1.16</flink.bundle.version>
+        <orc.flink.version>1.5.6</orc.flink.version>
+        <flink.avro.version>1.11.1</flink.avro.version>
+      </properties>
+      <activation>
+        <property>
+          <name>flink1.16</name>
+        </property>
+      </activation>
+    </profile>
+    <profile>
+    <id>flink1.15</id>
+      <properties>
+        <flink.version>${flink1.15.version}</flink.version>
+        <hudi.flink.module>hudi-flink1.15.x</hudi.flink.module>
+        <flink.bundle.version>1.15</flink.bundle.version>
+        <orc.flink.version>1.5.6</orc.flink.version>
+        <flink.avro.version>1.10.0</flink.avro.version>
       </properties>
       <activation>
         <property>
@@ -2253,6 +2493,7 @@
         <hudi.flink.module>hudi-flink1.14.x</hudi.flink.module>
         <flink.bundle.version>1.14</flink.bundle.version>
         <orc.flink.version>1.5.6</orc.flink.version>
+        <flink.avro.version>1.10.0</flink.avro.version>
         <flink.table.runtime.artifactId>flink-table-runtime_${scala.binary.version}</flink.table.runtime.artifactId>
         <flink.table.planner.artifactId>flink-table-planner_${scala.binary.version}</flink.table.planner.artifactId>
         <flink.parquet.artifactId>flink-parquet_${scala.binary.version}</flink.parquet.artifactId>
@@ -2276,6 +2517,7 @@
         <hudi.flink.module>hudi-flink1.13.x</hudi.flink.module>
         <flink.bundle.version>1.13</flink.bundle.version>
         <orc.flink.version>1.5.6</orc.flink.version>
+        <flink.avro.version>1.10.0</flink.avro.version>
         <flink.runtime.artifactId>flink-runtime_${scala.binary.version}</flink.runtime.artifactId>
         <flink.table.runtime.artifactId>flink-table-runtime-blink_${scala.binary.version}</flink.table.runtime.artifactId>
         <flink.table.planner.artifactId>flink-table-planner-blink_${scala.binary.version}</flink.table.planner.artifactId>
@@ -2306,6 +2548,7 @@
         </property>
       </activation>
     </profile>
+
   </profiles>
 
 </project>

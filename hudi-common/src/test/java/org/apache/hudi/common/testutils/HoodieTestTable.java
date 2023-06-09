@@ -22,6 +22,9 @@ package org.apache.hudi.common.testutils;
 import org.apache.hudi.avro.model.HoodieActionInstant;
 import org.apache.hudi.avro.model.HoodieCleanMetadata;
 import org.apache.hudi.avro.model.HoodieCleanerPlan;
+import org.apache.hudi.avro.model.HoodieClusteringGroup;
+import org.apache.hudi.avro.model.HoodieClusteringPlan;
+import org.apache.hudi.avro.model.HoodieClusteringStrategy;
 import org.apache.hudi.avro.model.HoodieCompactionPlan;
 import org.apache.hudi.avro.model.HoodieInstantInfo;
 import org.apache.hudi.avro.model.HoodieRequestedReplaceMetadata;
@@ -31,6 +34,7 @@ import org.apache.hudi.avro.model.HoodieRollbackPartitionMetadata;
 import org.apache.hudi.avro.model.HoodieRollbackPlan;
 import org.apache.hudi.avro.model.HoodieSavepointMetadata;
 import org.apache.hudi.avro.model.HoodieSavepointPartitionMetadata;
+import org.apache.hudi.avro.model.HoodieSliceInfo;
 import org.apache.hudi.common.HoodieCleanStat;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.FileSlice;
@@ -56,12 +60,13 @@ import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.ValidationUtils;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.exception.HoodieIOException;
+import org.apache.hudi.metadata.MetadataPartitionType;
 
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -101,6 +106,7 @@ import static org.apache.hudi.common.testutils.FileCreateUtils.createInflightRep
 import static org.apache.hudi.common.testutils.FileCreateUtils.createInflightRollbackFile;
 import static org.apache.hudi.common.testutils.FileCreateUtils.createInflightSavepoint;
 import static org.apache.hudi.common.testutils.FileCreateUtils.createMarkerFile;
+import static org.apache.hudi.common.testutils.FileCreateUtils.createLogFileMarker;
 import static org.apache.hudi.common.testutils.FileCreateUtils.createReplaceCommit;
 import static org.apache.hudi.common.testutils.FileCreateUtils.createRequestedCleanFile;
 import static org.apache.hudi.common.testutils.FileCreateUtils.createRequestedCommit;
@@ -127,7 +133,7 @@ public class HoodieTestTable {
   public static final String PHONY_TABLE_SCHEMA =
       "{\"namespace\": \"org.apache.hudi.avro.model\", \"type\": \"record\", \"name\": \"PhonyRecord\", \"fields\": []}";
 
-  private static final Logger LOG = LogManager.getLogger(HoodieTestTable.class);
+  private static final Logger LOG = LoggerFactory.getLogger(HoodieTestTable.class);
   private static final Random RANDOM = new Random();
 
   protected static HoodieTestTableState testTableState;
@@ -150,6 +156,11 @@ public class HoodieTestTable {
   public static HoodieTestTable of(HoodieTableMetaClient metaClient) {
     testTableState = HoodieTestTableState.of();
     return new HoodieTestTable(metaClient.getBasePath(), metaClient.getRawFs(), metaClient);
+  }
+
+  public void updateFilesPartitionInTableConfig() {
+    metaClient.getTableConfig().setMetadataPartitionState(metaClient, MetadataPartitionType.FILES, true);
+    this.metaClient = HoodieTableMetaClient.reload(metaClient);
   }
 
   public static String makeNewCommitTime(int sequence, String instantFormat) {
@@ -467,6 +478,47 @@ public class HoodieTestTable {
     return addCommit(instantTime, Option.of(commitMetadata));
   }
 
+  public HoodieTestTable addDeletePartitionCommit(String instantTime, String partition, List<String> fileIds) throws Exception {
+    forReplaceCommit(instantTime);
+    WriteOperationType operationType = WriteOperationType.DELETE_PARTITION;
+    Pair<HoodieRequestedReplaceMetadata, HoodieReplaceCommitMetadata> metas =
+            generateReplaceCommitMetadata(instantTime, partition, fileIds, Option.empty(), operationType);
+    return addReplaceCommit(instantTime, Option.of(metas.getLeft()), Option.empty(), metas.getRight());
+  }
+
+  private Pair<HoodieRequestedReplaceMetadata, HoodieReplaceCommitMetadata> generateReplaceCommitMetadata(
+          String instantTime, String partition, List<String> replacedFileIds, Option<String> newFileId, WriteOperationType operationType) {
+    HoodieRequestedReplaceMetadata requestedReplaceMetadata = new HoodieRequestedReplaceMetadata();
+    requestedReplaceMetadata.setOperationType(operationType.toString());
+    requestedReplaceMetadata.setVersion(1);
+    List<HoodieSliceInfo> sliceInfos = replacedFileIds.stream()
+            .map(replacedFileId -> HoodieSliceInfo.newBuilder().setFileId(replacedFileId).build())
+            .collect(Collectors.toList());
+    List<HoodieClusteringGroup> clusteringGroups = new ArrayList<>();
+    clusteringGroups.add(HoodieClusteringGroup.newBuilder()
+            .setVersion(1).setNumOutputFileGroups(1).setMetrics(Collections.emptyMap())
+            .setSlices(sliceInfos).build());
+    requestedReplaceMetadata.setExtraMetadata(Collections.emptyMap());
+    requestedReplaceMetadata.setClusteringPlan(HoodieClusteringPlan.newBuilder()
+            .setVersion(1).setExtraMetadata(Collections.emptyMap())
+            .setStrategy(HoodieClusteringStrategy.newBuilder().setStrategyClassName("").setVersion(1).build())
+            .setInputGroups(clusteringGroups).build());
+
+    HoodieReplaceCommitMetadata replaceMetadata = new HoodieReplaceCommitMetadata();
+    replacedFileIds.forEach(replacedFileId -> replaceMetadata.addReplaceFileId(partition, replacedFileId));
+    replaceMetadata.setOperationType(operationType);
+    if (newFileId.isPresent() && !StringUtils.isNullOrEmpty(newFileId.get())) {
+      HoodieWriteStat writeStat = new HoodieWriteStat();
+      writeStat.setPartitionPath(partition);
+      writeStat.setPath(partition + "/" + FSUtils.makeBaseFileName(instantTime, "1-0-1", newFileId.get()));
+      writeStat.setFileId(newFileId.get());
+      writeStat.setTotalWriteBytes(1);
+      writeStat.setFileSizeInBytes(1);
+      replaceMetadata.addWriteStat(partition, writeStat);
+    }
+    return Pair.of(requestedReplaceMetadata, replaceMetadata);
+  }
+
   public HoodieTestTable moveInflightCompactionToComplete(String instantTime, HoodieCommitMetadata metadata) throws IOException {
     createCommit(basePath, instantTime, Option.of(metadata));
     inflightCommits.remove(instantTime);
@@ -521,6 +573,11 @@ public class HoodieTestTable {
     for (String fileId : fileIds) {
       createMarkerFile(basePath, partitionPath, currentInstantTime, fileId, ioType);
     }
+    return this;
+  }
+
+  public HoodieTestTable withLogMarkerFile(String partitionPath, String fileId, IOType ioType) throws IOException {
+    createLogFileMarker(basePath, partitionPath, currentInstantTime, fileId, ioType);
     return this;
   }
 
@@ -699,6 +756,7 @@ public class HoodieTestTable {
 
   public FileStatus[] listAllLogFiles(String fileExtension) throws IOException {
     return FileSystemTestUtils.listRecursive(fs, new Path(basePath)).stream()
+        .filter(status -> !status.getPath().toString().contains(HoodieTableMetaClient.METAFOLDER_NAME))
         .filter(status -> status.getPath().getName().contains(fileExtension))
         .toArray(FileStatus[]::new);
   }

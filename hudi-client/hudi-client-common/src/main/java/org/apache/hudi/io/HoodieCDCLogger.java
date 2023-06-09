@@ -20,6 +20,7 @@ package org.apache.hudi.io;
 
 import org.apache.hudi.avro.HoodieAvroUtils;
 import org.apache.hudi.common.fs.FSUtils;
+import org.apache.hudi.common.model.HoodieAvroIndexedRecord;
 import org.apache.hudi.common.model.HoodieAvroPayload;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.table.HoodieTableConfig;
@@ -57,6 +58,9 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
+import static org.apache.hudi.common.table.cdc.HoodieCDCSupplementalLoggingMode.DATA_BEFORE;
+import static org.apache.hudi.common.table.cdc.HoodieCDCSupplementalLoggingMode.DATA_BEFORE_AFTER;
+
 /**
  * This class encapsulates all the cdc-writing functions.
  */
@@ -88,7 +92,7 @@ public class HoodieCDCLogger implements Closeable {
   private final CDCTransformer transformer;
 
   // Max block size to limit to for a log block
-  private final int maxBlockSize;
+  private final long maxBlockSize;
 
   // Average cdc record size. This size is updated at the end of every log block flushed to disk
   private long averageCDCRecordSize = 0;
@@ -179,10 +183,10 @@ public class HoodieCDCLogger implements Closeable {
   private void flushIfNeeded(Boolean force) {
     if (force || numOfCDCRecordsInMemory.get() * averageCDCRecordSize >= maxBlockSize) {
       try {
-        List<IndexedRecord> records = cdcData.values().stream()
+        List<HoodieRecord> records = cdcData.values().stream()
             .map(record -> {
               try {
-                return record.getInsertValue(cdcSchema).get();
+                return new HoodieAvroIndexedRecord(record.getInsertValue(cdcSchema).get());
               } catch (IOException e) {
                 throw new HoodieIOException("Failed to get cdc record", e);
               }
@@ -239,10 +243,10 @@ public class HoodieCDCLogger implements Closeable {
   // -------------------------------------------------------------------------
 
   private CDCTransformer getTransformer() {
-    if (cdcSupplementalLoggingMode.equals(HoodieCDCSupplementalLoggingMode.WITH_BEFORE_AFTER)) {
+    if (cdcSupplementalLoggingMode == DATA_BEFORE_AFTER) {
       return (operation, recordKey, oldRecord, newRecord) ->
-          HoodieCDCUtils.cdcRecord(cdcSchema, operation.getValue(), commitTime, removeCommitMetadata(oldRecord), newRecord);
-    } else if (cdcSupplementalLoggingMode.equals(HoodieCDCSupplementalLoggingMode.WITH_BEFORE)) {
+          HoodieCDCUtils.cdcRecord(cdcSchema, operation.getValue(), commitTime, removeCommitMetadata(oldRecord), removeCommitMetadata(newRecord));
+    } else if (cdcSupplementalLoggingMode == DATA_BEFORE) {
       return (operation, recordKey, oldRecord, newRecord) ->
           HoodieCDCUtils.cdcRecord(cdcSchema, operation.getValue(), recordKey, removeCommitMetadata(oldRecord));
     } else {

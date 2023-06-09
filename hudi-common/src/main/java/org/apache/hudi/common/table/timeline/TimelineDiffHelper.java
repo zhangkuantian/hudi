@@ -22,8 +22,8 @@ import org.apache.hudi.common.table.timeline.HoodieInstant.State;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.Pair;
 
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
  */
 public class TimelineDiffHelper {
 
-  private static final Logger LOG = LogManager.getLogger(TimelineDiffHelper.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TimelineDiffHelper.class);
 
   public static TimelineDiffResult getNewInstantsForIncrementalSync(HoodieTimeline oldTimeline,
       HoodieTimeline newTimeline) {
@@ -52,7 +52,7 @@ public class TimelineDiffHelper {
         // The last seen instant is no longer in the timeline. Do not incrementally Sync.
         return TimelineDiffResult.UNSAFE_SYNC_RESULT;
       }
-      Set<HoodieInstant> oldTimelineInstants = oldT.getInstants().collect(Collectors.toSet());
+      Set<HoodieInstant> oldTimelineInstants = oldT.getInstantsAsStream().collect(Collectors.toSet());
 
       List<HoodieInstant> newInstants = new ArrayList<>();
 
@@ -72,7 +72,7 @@ public class TimelineDiffHelper {
               && instantPair.getValue().isCompleted())
           .map(Pair::getKey).collect(Collectors.toList());
 
-      newTimeline.getInstants().filter(instant -> !oldTimelineInstants.contains(instant)).forEach(newInstants::add);
+      newTimeline.getInstantsAsStream().filter(instant -> !oldTimelineInstants.contains(instant)).forEach(newInstants::add);
 
       List<Pair<HoodieInstant, HoodieInstant>> logCompactionInstants = getPendingLogCompactionTransitions(oldTimeline, newTimeline);
       List<HoodieInstant> finishedOrRemovedLogCompactionInstants = logCompactionInstants.stream()
@@ -92,9 +92,9 @@ public class TimelineDiffHelper {
    */
   private static List<Pair<HoodieInstant, HoodieInstant>> getPendingLogCompactionTransitions(HoodieTimeline oldTimeline,
                                                                                           HoodieTimeline newTimeline) {
-    Set<HoodieInstant> newTimelineInstants = newTimeline.getInstants().collect(Collectors.toSet());
+    Set<HoodieInstant> newTimelineInstants = newTimeline.getInstantsAsStream().collect(Collectors.toSet());
 
-    return oldTimeline.filterPendingLogCompactionTimeline().getInstants().map(instant -> {
+    return oldTimeline.filterPendingLogCompactionTimeline().getInstantsAsStream().map(instant -> {
       if (newTimelineInstants.contains(instant)) {
         return Pair.of(instant, instant);
       } else {
@@ -118,9 +118,9 @@ public class TimelineDiffHelper {
    */
   private static List<Pair<HoodieInstant, HoodieInstant>> getPendingCompactionTransitions(HoodieTimeline oldTimeline,
       HoodieTimeline newTimeline) {
-    Set<HoodieInstant> newTimelineInstants = newTimeline.getInstants().collect(Collectors.toSet());
+    Set<HoodieInstant> newTimelineInstants = newTimeline.getInstantsAsStream().collect(Collectors.toSet());
 
-    return oldTimeline.filterPendingCompactionTimeline().getInstants().map(instant -> {
+    return oldTimeline.filterPendingCompactionTimeline().getInstantsAsStream().map(instant -> {
       if (newTimelineInstants.contains(instant)) {
         return Pair.of(instant, instant);
       } else {

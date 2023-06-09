@@ -45,8 +45,10 @@ import org.apache.avro.generic.GenericRecord;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.Logger;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.sql.SQLContext;
@@ -57,8 +59,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.shell.Shell;
-import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.core.Logger;
 
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -255,14 +255,14 @@ public class TestRepairsCommand extends CLIFunctionalTestHarness {
     // reload meta client
     metaClient = HoodieTableMetaClient.reload(metaClient);
     // first, there are four instants
-    assertEquals(4, metaClient.getActiveTimeline().filterInflightsAndRequested().getInstants().count());
+    assertEquals(4, metaClient.getActiveTimeline().filterInflightsAndRequested().countInstants());
 
     Object result = shell.evaluate(() -> "repair corrupted clean files");
     assertTrue(ShellEvaluationResultUtil.isSuccess(result));
 
     // reload meta client
     metaClient = HoodieTableMetaClient.reload(metaClient);
-    assertEquals(0, metaClient.getActiveTimeline().filterInflightsAndRequested().getInstants().count());
+    assertEquals(0, metaClient.getActiveTimeline().filterInflightsAndRequested().countInstants());
   }
 
   /**
@@ -283,7 +283,7 @@ public class TestRepairsCommand extends CLIFunctionalTestHarness {
       HoodieTestCommitMetadataGenerator.createCommitFile(tablePath, timestamp, conf);
     }
 
-    metaClient.getActiveTimeline().getInstants().filter(hoodieInstant -> Integer.parseInt(hoodieInstant.getTimestamp()) % 4 == 0).forEach(hoodieInstant -> {
+    metaClient.getActiveTimeline().getInstantsAsStream().filter(hoodieInstant -> Integer.parseInt(hoodieInstant.getTimestamp()) % 4 == 0).forEach(hoodieInstant -> {
       metaClient.getActiveTimeline().deleteInstantFileIfExists(hoodieInstant);
       metaClient.getActiveTimeline().createNewInstant(hoodieInstant);
     });
