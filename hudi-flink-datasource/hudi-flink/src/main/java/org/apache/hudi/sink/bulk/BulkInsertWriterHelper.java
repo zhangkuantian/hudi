@@ -18,11 +18,11 @@
 
 package org.apache.hudi.sink.bulk;
 
-import org.apache.hudi.client.HoodieInternalWriteStatus;
 import org.apache.hudi.client.WriteStatus;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.configuration.FlinkOptions;
+import org.apache.hudi.configuration.OptionsResolver;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.io.storage.row.HoodieRowDataCreateHandle;
 import org.apache.hudi.table.HoodieTable;
@@ -43,7 +43,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 /**
  * Helper class for bulk insert used by Flink.
@@ -61,13 +60,14 @@ public class BulkInsertWriterHelper {
   protected final RowType rowType;
   protected final boolean preserveHoodieMetadata;
   protected final Boolean isInputSorted;
-  private final List<HoodieInternalWriteStatus> writeStatusList = new ArrayList<>();
+  private final List<WriteStatus> writeStatusList = new ArrayList<>();
   protected HoodieRowDataCreateHandle handle;
   private String lastKnownPartitionPath = null;
   private final String fileIdPrefix;
   private int numFilesWritten = 0;
   protected final Map<String, HoodieRowDataCreateHandle> handles = new HashMap<>();
-  @Nullable protected final RowDataKeyGen keyGen;
+  @Nullable
+  protected final RowDataKeyGen keyGen;
 
   public BulkInsertWriterHelper(Configuration conf, HoodieTable hoodieTable, HoodieWriteConfig writeConfig,
                                 String instantTime, int taskPartitionId, long taskId, long taskEpochId, RowType rowType) {
@@ -85,7 +85,7 @@ public class BulkInsertWriterHelper {
     this.taskEpochId = taskEpochId;
     this.rowType = preserveHoodieMetadata ? rowType : addMetadataFields(rowType, writeConfig.allowOperationMetadataField()); // patch up with metadata fields
     this.preserveHoodieMetadata = preserveHoodieMetadata;
-    this.isInputSorted = conf.getBoolean(FlinkOptions.WRITE_BULK_INSERT_SORT_INPUT);
+    this.isInputSorted = OptionsResolver.isBulkInsertOperation(conf) && conf.getBoolean(FlinkOptions.WRITE_BULK_INSERT_SORT_INPUT);
     this.fileIdPrefix = UUID.randomUUID().toString();
     this.keyGen = preserveHoodieMetadata ? null : RowDataKeyGen.instance(conf, rowType);
   }
@@ -116,11 +116,6 @@ public class BulkInsertWriterHelper {
       LOG.error("Global error thrown while trying to write records in HoodieRowCreateHandle ", ioException);
       throw new IOException(ioException);
     }
-  }
-
-  public List<HoodieInternalWriteStatus> getHoodieWriteStatuses() throws IOException {
-    close();
-    return writeStatusList;
   }
 
   private HoodieRowDataCreateHandle getRowCreateHandle(String partitionPath) throws IOException {
@@ -196,24 +191,12 @@ public class BulkInsertWriterHelper {
 
   public List<WriteStatus> getWriteStatuses(int taskID) {
     try {
-      return getHoodieWriteStatuses().stream()
-          .map(BulkInsertWriterHelper::toWriteStatus).collect(Collectors.toList());
+      close();
+      return writeStatusList;
     } catch (IOException e) {
       throw new HoodieException("Error collect the write status for task [" + taskID + "]", e);
     }
   }
 
-  /**
-   * Tool to convert {@link HoodieInternalWriteStatus} into {@link WriteStatus}.
-   */
-  private static WriteStatus toWriteStatus(HoodieInternalWriteStatus internalWriteStatus) {
-    WriteStatus writeStatus = new WriteStatus(false, 0.1);
-    writeStatus.setStat(internalWriteStatus.getStat());
-    writeStatus.setFileId(internalWriteStatus.getFileId());
-    writeStatus.setGlobalError(internalWriteStatus.getGlobalError());
-    writeStatus.setTotalRecords(internalWriteStatus.getTotalRecords());
-    writeStatus.setTotalErrorRecords(internalWriteStatus.getTotalErrorRecords());
-    return writeStatus;
-  }
 }
 

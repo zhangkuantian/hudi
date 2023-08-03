@@ -19,11 +19,12 @@
 package org.apache.hudi.common.config;
 
 import org.apache.hudi.common.engine.EngineType;
+import org.apache.hudi.common.table.view.FileSystemViewStorageConfig;
+import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.exception.HoodieNotSupportedException;
 
 import javax.annotation.concurrent.Immutable;
-
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
@@ -48,7 +49,7 @@ public final class HoodieMetadataConfig extends HoodieConfig {
   // Meta fields are not populated by default for metadata table
   public static final boolean DEFAULT_METADATA_POPULATE_META_FIELDS = false;
   // Default number of commits to retain, without cleaning, on metadata table
-  public static final int DEFAULT_METADATA_CLEANER_COMMITS_RETAINED = 3;
+  public static final int DEFAULT_METADATA_CLEANER_COMMITS_RETAINED = 20;
 
   public static final String METADATA_PREFIX = "hoodie.metadata";
   public static final String OPTIMIZED_LOG_BLOCKS_SCAN = ".optimized.log.blocks.scan.enable";
@@ -70,14 +71,6 @@ public final class HoodieMetadataConfig extends HoodieConfig {
       .sinceVersion("0.7.0")
       .withDocumentation("Enable publishing of metrics around metadata table.");
 
-  // Parallelism for inserts
-  public static final ConfigProperty<Integer> INSERT_PARALLELISM_VALUE = ConfigProperty
-      .key(METADATA_PREFIX + ".insert.parallelism")
-      .defaultValue(1)
-      .markAdvanced()
-      .sinceVersion("0.7.0")
-      .withDocumentation("Parallelism to use when inserting to the metadata table");
-
   // Async index
   public static final ConfigProperty<Boolean> ASYNC_INDEX_ENABLE = ConfigProperty
       .key(METADATA_PREFIX + ".index.async")
@@ -93,6 +86,20 @@ public final class HoodieMetadataConfig extends HoodieConfig {
       .markAdvanced()
       .sinceVersion("0.7.0")
       .withDocumentation("Controls how often the metadata table is compacted.");
+
+  public static final ConfigProperty<String> ENABLE_LOG_COMPACTION_ON_METADATA_TABLE = ConfigProperty
+      .key(METADATA_PREFIX + ".log.compaction.enable")
+      .defaultValue("false")
+      .markAdvanced()
+      .sinceVersion("0.14")
+      .withDocumentation("This configs enables logcompaction for the metadata table.");
+
+  // Log blocks threshold, after a file slice crosses this threshold log compact operation is scheduled.
+  public static final ConfigProperty<Integer> LOG_COMPACT_BLOCKS_THRESHOLD = ConfigProperty
+      .key(METADATA_PREFIX + ".log.compaction.blocks.threshold")
+      .defaultValue(5)
+      .markAdvanced()
+      .withDocumentation("Controls the criteria to log compacted files groups in metadata table.");
 
   // Regex to filter out matching directories during bootstrap
   public static final ConfigProperty<String> DIR_FILTER_REGEX = ConfigProperty
@@ -234,6 +241,81 @@ public final class HoodieMetadataConfig extends HoodieConfig {
       .withDocumentation("When there is a pending instant in data table, this config limits the allowed number of deltacommits in metadata table to "
           + "prevent the metadata table's timeline from growing unboundedly as compaction won't be triggered due to the pending data table instant.");
 
+  public static final ConfigProperty<Boolean> RECORD_INDEX_ENABLE_PROP = ConfigProperty
+      .key(METADATA_PREFIX + ".record.index.enable")
+      .defaultValue(false)
+      .markAdvanced()
+      .sinceVersion("0.14.0")
+      .withDocumentation("Create the HUDI Record Index within the Metadata Table");
+
+  public static final ConfigProperty<Integer> RECORD_INDEX_MIN_FILE_GROUP_COUNT_PROP = ConfigProperty
+      .key(METADATA_PREFIX + ".record.index.min.filegroup.count")
+      .defaultValue(10)
+      .markAdvanced()
+      .sinceVersion("0.14.0")
+      .withDocumentation("Minimum number of file groups to use for Record Index.");
+
+  public static final ConfigProperty<Integer> RECORD_INDEX_MAX_FILE_GROUP_COUNT_PROP = ConfigProperty
+      .key(METADATA_PREFIX + ".record.index.max.filegroup.count")
+      .defaultValue(10000)
+      .markAdvanced()
+      .sinceVersion("0.14.0")
+      .withDocumentation("Maximum number of file groups to use for Record Index.");
+
+  public static final ConfigProperty<Integer> RECORD_INDEX_MAX_FILE_GROUP_SIZE_BYTES_PROP = ConfigProperty
+      .key(METADATA_PREFIX + ".record.index.max.filegroup.size")
+      .defaultValue(1024 * 1024 * 1024)
+      .markAdvanced()
+      .sinceVersion("0.14.0")
+      .withDocumentation("Maximum size in bytes of a single file group. Large file group takes longer to compact.");
+
+  public static final ConfigProperty<Float> RECORD_INDEX_GROWTH_FACTOR_PROP = ConfigProperty
+      .key(METADATA_PREFIX + ".record.index.growth.factor")
+      .defaultValue(2.0f)
+      .markAdvanced()
+      .sinceVersion("0.14.0")
+      .withDocumentation("The current number of records are multiplied by this number when estimating the number of "
+          + "file groups to create automatically. This helps account for growth in the number of records in the dataset.");
+
+  public static final ConfigProperty<Integer> RECORD_INDEX_MAX_PARALLELISM = ConfigProperty
+      .key(METADATA_PREFIX + ".max.init.parallelism")
+      .defaultValue(100000)
+      .sinceVersion("0.14.0")
+      .withDocumentation("Maximum parallelism to use when initializing Record Index.");
+
+  public static final ConfigProperty<Long> MAX_READER_MEMORY_PROP = ConfigProperty
+      .key(METADATA_PREFIX + ".max.reader.memory")
+      .defaultValue(1024 * 1024 * 1024L)
+      .markAdvanced()
+      .sinceVersion("0.14.0")
+      .withDocumentation("Max memory to use for the reader to read from metadata");
+
+  public static final ConfigProperty<Integer> MAX_READER_BUFFER_SIZE_PROP = ConfigProperty
+      .key(METADATA_PREFIX + ".max.reader.buffer.size")
+      .defaultValue(10 * 1024 * 1024)
+      .markAdvanced()
+      .sinceVersion("0.14.0")
+      .withDocumentation("Max memory to use for the reader buffer while merging log blocks");
+
+  public static final ConfigProperty<String> SPILLABLE_MAP_DIR_PROP = ConfigProperty
+      .key(METADATA_PREFIX + ".spillable.map.path")
+      .noDefaultValue()
+      .withInferFunction(cfg -> Option.of(cfg.getStringOrDefault(FileSystemViewStorageConfig.SPILLABLE_DIR)))
+      .markAdvanced()
+      .sinceVersion("0.14.0")
+      .withDocumentation("Path on local storage to use, when keys read from metadata are held in a spillable map.");
+
+  public static final ConfigProperty<Long> MAX_LOG_FILE_SIZE_BYTES_PROP = ConfigProperty
+      .key(METADATA_PREFIX + ".max.logfile.size")
+      .defaultValue(2 * 1024 * 1024 * 1024L)  // 2GB
+      .sinceVersion("0.14.0")
+      .withDocumentation("Maximum size in bytes of a single log file. Larger log files can contain larger log blocks "
+          + "thereby reducing the number of blocks to search for keys");
+
+  public long getMaxLogFileSize() {
+    return getLong(MAX_LOG_FILE_SIZE_BYTES_PROP);
+  }
+
   private HoodieMetadataConfig() {
     super();
   }
@@ -318,9 +400,42 @@ public final class HoodieMetadataConfig extends HoodieConfig {
     return getIntOrDefault(METADATA_MAX_NUM_DELTACOMMITS_WHEN_PENDING);
   }
 
-  /**
-   * Builder for {@link HoodieMetadataConfig}.
-   */
+  public boolean enableRecordIndex() {
+    return enabled() && getBoolean(RECORD_INDEX_ENABLE_PROP);
+  }
+
+  public int getRecordIndexMinFileGroupCount() {
+    return getInt(RECORD_INDEX_MIN_FILE_GROUP_COUNT_PROP);
+  }
+
+  public int getRecordIndexMaxFileGroupCount() {
+    return getInt(RECORD_INDEX_MAX_FILE_GROUP_COUNT_PROP);
+  }
+
+  public float getRecordIndexGrowthFactor() {
+    return getFloat(RECORD_INDEX_GROWTH_FACTOR_PROP);
+  }
+
+  public int getRecordIndexMaxFileGroupSizeBytes() {
+    return getInt(RECORD_INDEX_MAX_FILE_GROUP_SIZE_BYTES_PROP);
+  }
+
+  public String getSplliableMapDir() {
+    return getString(SPILLABLE_MAP_DIR_PROP);
+  }
+
+  public long getMaxReaderMemory() {
+    return getLong(MAX_READER_MEMORY_PROP);
+  }
+
+  public int getMaxReaderBufferSize() {
+    return getInt(MAX_READER_BUFFER_SIZE_PROP);
+  }
+
+  public int getRecordIndexMaxParallelism() {
+    return getInt(RECORD_INDEX_MAX_PARALLELISM);
+  }
+
   public static class Builder {
 
     private EngineType engineType = EngineType.SPARK;
@@ -393,11 +508,6 @@ public final class HoodieMetadataConfig extends HoodieConfig {
       return this;
     }
 
-    public Builder withInsertParallelism(int parallelism) {
-      metadataConfig.setValue(INSERT_PARALLELISM_VALUE, String.valueOf(parallelism));
-      return this;
-    }
-
     public Builder withAsyncIndex(boolean asyncIndex) {
       metadataConfig.setValue(ASYNC_INDEX_ENABLE, String.valueOf(asyncIndex));
       return this;
@@ -408,8 +518,23 @@ public final class HoodieMetadataConfig extends HoodieConfig {
       return this;
     }
 
+    public Builder withLogCompactionEnabled(boolean enableLogCompaction) {
+      metadataConfig.setValue(ENABLE_LOG_COMPACTION_ON_METADATA_TABLE, Boolean.toString(enableLogCompaction));
+      return this;
+    }
+
+    public Builder withLogCompactBlocksThreshold(int logCompactBlocksThreshold) {
+      metadataConfig.setValue(LOG_COMPACT_BLOCKS_THRESHOLD, Integer.toString(logCompactBlocksThreshold));
+      return this;
+    }
+
     public Builder withFileListingParallelism(int parallelism) {
       metadataConfig.setValue(FILE_LISTING_PARALLELISM_VALUE, String.valueOf(parallelism));
+      return this;
+    }
+
+    public Builder withRecordIndexMaxParallelism(int parallelism) {
+      metadataConfig.setValue(RECORD_INDEX_MAX_PARALLELISM, String.valueOf(parallelism));
       return this;
     }
 
@@ -445,6 +570,47 @@ public final class HoodieMetadataConfig extends HoodieConfig {
 
     public Builder withMaxNumDeltacommitsWhenPending(int maxNumDeltaCommitsWhenPending) {
       metadataConfig.setValue(METADATA_MAX_NUM_DELTACOMMITS_WHEN_PENDING, String.valueOf(maxNumDeltaCommitsWhenPending));
+      return this;
+    }
+
+    public Builder withEnableRecordIndex(boolean enabled) {
+      metadataConfig.setValue(RECORD_INDEX_ENABLE_PROP, String.valueOf(enabled));
+      return this;
+    }
+
+    public Builder withRecordIndexFileGroupCount(int minCount, int maxCount) {
+      metadataConfig.setValue(RECORD_INDEX_MIN_FILE_GROUP_COUNT_PROP, String.valueOf(minCount));
+      metadataConfig.setValue(RECORD_INDEX_MAX_FILE_GROUP_COUNT_PROP, String.valueOf(maxCount));
+      return this;
+    }
+
+    public Builder withRecordIndexGrowthFactor(float factor) {
+      metadataConfig.setValue(RECORD_INDEX_GROWTH_FACTOR_PROP, String.valueOf(factor));
+      return this;
+    }
+
+    public Builder withRecordIndexMaxFileGroupSizeBytes(long sizeInBytes) {
+      metadataConfig.setValue(RECORD_INDEX_MAX_FILE_GROUP_SIZE_BYTES_PROP, String.valueOf(sizeInBytes));
+      return this;
+    }
+
+    public Builder withSpillableMapDir(String dir) {
+      metadataConfig.setValue(SPILLABLE_MAP_DIR_PROP, dir);
+      return this;
+    }
+
+    public Builder withMaxReaderMemory(long mem) {
+      metadataConfig.setValue(MAX_READER_MEMORY_PROP, String.valueOf(mem));
+      return this;
+    }
+
+    public Builder withMaxReaderBufferSize(long mem) {
+      metadataConfig.setValue(MAX_READER_BUFFER_SIZE_PROP, String.valueOf(mem));
+      return this;
+    }
+
+    public Builder withMaxLogFileSizeBytes(long sizeInBytes) {
+      metadataConfig.setValue(MAX_LOG_FILE_SIZE_BYTES_PROP, String.valueOf(sizeInBytes));
       return this;
     }
 
@@ -488,17 +654,6 @@ public final class HoodieMetadataConfig extends HoodieConfig {
    */
   @Deprecated
   public static final boolean DEFAULT_METADATA_METRICS_ENABLE = METRICS_ENABLE.defaultValue();
-
-  /**
-   * @deprecated Use {@link #INSERT_PARALLELISM_VALUE} and its methods.
-   */
-  @Deprecated
-  public static final String METADATA_INSERT_PARALLELISM_PROP = INSERT_PARALLELISM_VALUE.key();
-  /**
-   * @deprecated Use {@link #INSERT_PARALLELISM_VALUE} and its methods.
-   */
-  @Deprecated
-  public static final int DEFAULT_METADATA_INSERT_PARALLELISM = INSERT_PARALLELISM_VALUE.defaultValue();
 
   /**
    * @deprecated Use {@link #COMPACT_NUM_DELTA_COMMITS} and its methods.

@@ -26,16 +26,17 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.avro.{HoodieAvroDeserializer, HoodieAvroSchemaConverters, HoodieAvroSerializer}
 import org.apache.spark.sql.catalyst.analysis.EliminateSubqueryAliases
 import org.apache.spark.sql.catalyst.catalog.CatalogTable
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, InterpretedPredicate}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, InterpretedPredicate}
 import org.apache.spark.sql.catalyst.parser.ParserInterface
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
-import org.apache.spark.sql.catalyst.plans.logical.{Command, LogicalPlan}
+import org.apache.spark.sql.catalyst.plans.JoinType
+import org.apache.spark.sql.catalyst.plans.logical.{Command, Join, LogicalPlan}
 import org.apache.spark.sql.catalyst.util.DateFormatter
 import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.parser.HoodieExtendedParserInterface
-import org.apache.spark.sql.sources.BaseRelation
+import org.apache.spark.sql.sources.{BaseRelation, Filter}
 import org.apache.spark.sql.types.{DataType, Metadata, StructType}
 import org.apache.spark.storage.StorageLevel
 
@@ -81,6 +82,11 @@ trait SparkAdapter extends Serializable {
   def getCatalystPlanUtils: HoodieCatalystPlansUtils
 
   /**
+   * Returns an instance of [[HoodieSchemaUtils]] providing schema utils.
+   */
+  def getSchemaUtils: HoodieSchemaUtils
+
+  /**
    * Creates instance of [[HoodieAvroSerializer]] providing for ability to serialize
    * Spark's [[InternalRow]] into Avro payloads
    */
@@ -111,6 +117,11 @@ trait SparkAdapter extends Serializable {
    * Create the SparkParsePartitionUtil.
    */
   def getSparkParsePartitionUtil: SparkParsePartitionUtil
+
+  /**
+   * Gets the [[HoodieSparkPartitionedFileUtils]].
+   */
+  def getSparkPartitionedFileUtils: HoodieSparkPartitionedFileUtils
 
   /**
    * Get the [[DateFormatter]].
@@ -192,4 +203,9 @@ trait SparkAdapter extends Serializable {
    * Converts instance of [[StorageLevel]] to a corresponding string
    */
   def convertStorageLevelToString(level: StorageLevel): String
+
+  /**
+   * Tries to translate a Catalyst Expression into data source Filter
+   */
+  def translateFilter(predicate: Expression, supportNestedPredicatePushdown: Boolean = false): Option[Filter]
 }

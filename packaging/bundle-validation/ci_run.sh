@@ -94,6 +94,16 @@ elif [[ ${SPARK_RUNTIME} == 'spark3.3.2' ]]; then
   CONFLUENT_VERSION=5.5.12
   KAFKA_CONNECT_HDFS_VERSION=10.1.13
   IMAGE_TAG=flink1170hive313spark332
+elif [[ ${SPARK_RUNTIME} == 'spark3.4.0' ]]; then
+  HADOOP_VERSION=3.3.5
+  HIVE_VERSION=3.1.3
+  DERBY_VERSION=10.14.1.0
+  FLINK_VERSION=1.17.0
+  SPARK_VERSION=3.4.0
+  SPARK_HADOOP_VERSION=3
+  CONFLUENT_VERSION=5.5.12
+  KAFKA_CONNECT_HDFS_VERSION=10.1.13
+  IMAGE_TAG=flink1170hive313spark340
 fi
 
 # Copy bundle jars to temp dir for mounting
@@ -190,5 +200,8 @@ docker build \
 .
 
 # run validation script in docker
-docker run -v $TMP_JARS_DIR:/opt/bundle-validation/jars -v $TMP_DATA_DIR:/opt/bundle-validation/data \
+docker run --name hudi_docker \
+  -v ${GITHUB_WORKSPACE}:/opt/bundle-validation/docker-test \
+  -v $TMP_JARS_DIR:/opt/bundle-validation/jars \
+  -v $TMP_DATA_DIR:/opt/bundle-validation/data \
   -i hudi-ci-bundle-validation:$IMAGE_TAG bash validate.sh $JAVA_RUNTIME_VERSION

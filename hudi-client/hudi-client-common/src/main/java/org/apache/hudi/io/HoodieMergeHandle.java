@@ -268,7 +268,6 @@ public class HoodieMergeHandle<T, I, K, O> extends HoodieWriteHandle<T, I, K, O>
   protected boolean writeUpdateRecord(HoodieRecord<T> newRecord, HoodieRecord<T> oldRecord, Option<HoodieRecord> combineRecordOpt, Schema writerSchema) throws IOException {
     boolean isDelete = false;
     if (combineRecordOpt.isPresent()) {
-      updatedRecordsWritten++;
       if (oldRecord.getData() != combineRecordOpt.get().getData()) {
         // the incoming record is chosen
         isDelete = HoodieOperation.isDelete(newRecord.getOperation());
@@ -276,6 +275,7 @@ public class HoodieMergeHandle<T, I, K, O> extends HoodieWriteHandle<T, I, K, O>
         // the incoming record is dropped
         return false;
       }
+      updatedRecordsWritten++;
     }
     return writeRecord(newRecord, combineRecordOpt, writerSchema, config.getPayloadConfig().getProps(), isDelete);
   }
@@ -314,6 +314,10 @@ public class HoodieMergeHandle<T, I, K, O> extends HoodieWriteHandle<T, I, K, O>
         recordsWritten++;
       } else {
         recordsDeleted++;
+        // Clear the new location as the record was deleted
+        newRecord.unseal();
+        newRecord.clearNewLocation();
+        newRecord.seal();
       }
       writeStatus.markSuccess(newRecord, recordMetadata);
       // deflate record payload after recording success. This will help users access payload as a
@@ -456,7 +460,7 @@ public class HoodieMergeHandle<T, I, K, O> extends HoodieWriteHandle<T, I, K, O>
     }
 
     long oldNumWrites = 0;
-    try (HoodieFileReader reader = HoodieFileReaderFactory.getReaderFactory(this.config.getRecordMerger().getRecordType()).getFileReader(hoodieTable.getHadoopConf(), oldFilePath)) {
+    try (HoodieFileReader reader = HoodieFileReaderFactory.getReaderFactory(this.recordMerger.getRecordType()).getFileReader(hoodieTable.getHadoopConf(), oldFilePath)) {
       oldNumWrites = reader.getTotalRecords();
     } catch (IOException e) {
       throw new HoodieUpsertException("Failed to check for merge data validation", e);

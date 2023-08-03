@@ -21,8 +21,9 @@ import org.apache.avro.Schema
 import org.apache.hadoop.fs.Path
 import org.apache.hudi.client.utils.SparkRowSerDe
 import org.apache.hudi.common.table.HoodieTableMetaClient
+import org.apache.hudi.common.util.JsonUtils
 import org.apache.hudi.spark3.internal.ReflectUtil
-import org.apache.hudi.{AvroConversionUtils, DefaultSource, Spark3RowSerDe}
+import org.apache.hudi.{AvroConversionUtils, DefaultSource, HoodieSparkUtils, Spark3RowSerDe}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.avro.{HoodieAvroSchemaConverters, HoodieSparkAvroSchemaConverters}
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
@@ -30,7 +31,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, InterpretedPredica
 import org.apache.spark.sql.catalyst.util.DateFormatter
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.hudi.SparkAdapter
-import org.apache.spark.sql.sources.BaseRelation
+import org.apache.spark.sql.sources.{BaseRelation, Filter}
 import org.apache.spark.sql.{HoodieSpark3CatalogUtils, SQLContext, SparkSession}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.storage.StorageLevel
@@ -45,6 +46,9 @@ import scala.collection.convert.Wrappers.JConcurrentMapWrapper
  * Base implementation of [[SparkAdapter]] for Spark 3.x branch
  */
 abstract class BaseSpark3Adapter extends SparkAdapter with Logging {
+
+  // JsonUtils for Support Spark Version >= 3.3
+  if (HoodieSparkUtils.gteqSpark3_3) JsonUtils.registerModules()
 
   private val cache = JConcurrentMapWrapper(
     new ConcurrentHashMap[ZoneId, DateFormatter](1))
@@ -88,4 +92,9 @@ abstract class BaseSpark3Adapter extends SparkAdapter with Logging {
   }
 
   override def convertStorageLevelToString(level: StorageLevel): String
+
+  override def translateFilter(predicate: Expression,
+                               supportNestedPredicatePushdown: Boolean = false): Option[Filter] = {
+    DataSourceStrategy.translateFilter(predicate, supportNestedPredicatePushdown)
+  }
 }

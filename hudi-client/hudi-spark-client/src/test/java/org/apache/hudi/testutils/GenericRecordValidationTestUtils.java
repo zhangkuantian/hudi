@@ -18,11 +18,6 @@
 
 package org.apache.hudi.testutils;
 
-import org.apache.avro.Schema;
-import org.apache.avro.generic.GenericRecord;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.io.ArrayWritable;
-import org.apache.hadoop.mapred.JobConf;
 import org.apache.hudi.avro.HoodieAvroUtils;
 import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.util.CollectionUtils;
@@ -30,6 +25,14 @@ import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.hadoop.config.HoodieRealtimeConfig;
 import org.apache.hudi.hadoop.utils.HoodieRealtimeRecordReaderUtils;
+
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.io.ArrayWritable;
+import org.apache.hadoop.io.BytesWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapred.JobConf;
 
 import java.nio.file.Paths;
 import java.util.Arrays;
@@ -44,6 +47,7 @@ import static org.apache.hudi.common.model.HoodieRecord.FILENAME_METADATA_FIELD;
 import static org.apache.hudi.common.model.HoodieRecord.OPERATION_METADATA_FIELD;
 import static org.apache.hudi.common.model.HoodieRecord.RECORD_KEY_METADATA_FIELD;
 import static org.apache.hudi.hadoop.utils.HoodieHiveUtils.HOODIE_CONSUME_COMMIT;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -62,6 +66,8 @@ public class GenericRecordValidationTestUtils {
         if (value1 instanceof ArrayWritable) {
           assertEquals(HoodieRealtimeRecordReaderUtils.arrayWritableToString((ArrayWritable) value1),
               HoodieRealtimeRecordReaderUtils.arrayWritableToString((ArrayWritable) value2));
+        } else if (value1 instanceof Text && value2 instanceof BytesWritable) {
+          assertArrayEquals(((Text) value1).getBytes(), ((BytesWritable) value2).getBytes());
         } else {
           assertEquals(value1, value2, "Field name " + fieldName + " is not same."
               + " Val1: " + value1 + ", Val2:" + value2);
@@ -88,7 +94,7 @@ public class GenericRecordValidationTestUtils {
         .collect(Collectors.toList());
 
     jobConf.set(String.format(HOODIE_CONSUME_COMMIT, config.getTableName()), instant1);
-    jobConf.set(HoodieRealtimeConfig.USE_LOG_RECORD_READER_SCAN_V2, "true");
+    jobConf.set(HoodieRealtimeConfig.ENABLE_OPTIMIZED_LOG_BLOCKS_SCAN, "true");
     List<GenericRecord> records = HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(
         hadoopConf, fullPartitionPaths, config.getBasePath(), jobConf, true);
     Map<String, GenericRecord> prevRecordsMap = records.stream()

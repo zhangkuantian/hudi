@@ -53,6 +53,31 @@ trait HoodieCatalystPlansUtils {
   def createJoin(left: LogicalPlan, right: LogicalPlan, joinType: JoinType): Join
 
   /**
+   * Decomposes [[MatchMergeIntoTable]] into its arguments with accommodation for
+   * case class changes of [[MergeIntoTable]] in Spark 3.4.
+   *
+   * Before Spark 3.4.0 (five arguments):
+   *
+   * case class MergeIntoTable(
+   * targetTable: LogicalPlan,
+   * sourceTable: LogicalPlan,
+   * mergeCondition: Expression,
+   * matchedActions: Seq[MergeAction],
+   * notMatchedActions: Seq[MergeAction]) extends BinaryCommand with SupportsSubquery
+   *
+   * Since Spark 3.4.0 (six arguments):
+   *
+   * case class MergeIntoTable(
+   * targetTable: LogicalPlan,
+   * sourceTable: LogicalPlan,
+   * mergeCondition: Expression,
+   * matchedActions: Seq[MergeAction],
+   * notMatchedActions: Seq[MergeAction],
+   * notMatchedBySourceActions: Seq[MergeAction]) extends BinaryCommand with SupportsSubquery
+   */
+  def unapplyMergeIntoTable(plan: LogicalPlan): Option[(LogicalPlan, LogicalPlan, Expression)]
+
+  /**
    * Decomposes [[InsertIntoStatement]] into its arguments allowing to accommodate for API
    * changes in Spark 3.3
    */
@@ -72,4 +97,12 @@ trait HoodieCatalystPlansUtils {
    * Get the member of the Repair Table LogicalPlan.
    */
   def getRepairTableChildren(plan: LogicalPlan): Option[(TableIdentifier, Boolean, Boolean, String)]
+
+  /**
+   * Calls fail analysis on
+   *s
+   */
+  def failAnalysisForMIT(a: Attribute, cols: String): Unit = {}
+
+  def createMITJoin(left: LogicalPlan, right: LogicalPlan, joinType: JoinType, condition: Option[Expression], hint: String): LogicalPlan
 }

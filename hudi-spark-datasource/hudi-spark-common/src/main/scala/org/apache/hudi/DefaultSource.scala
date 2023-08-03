@@ -19,7 +19,7 @@ package org.apache.hudi
 
 import org.apache.hadoop.fs.Path
 import org.apache.hudi.DataSourceReadOptions._
-import org.apache.hudi.DataSourceWriteOptions.{BOOTSTRAP_OPERATION_OPT_VAL, OPERATION, STREAMING_CHECKPOINT_IDENTIFIER}
+import org.apache.hudi.DataSourceWriteOptions.{BOOTSTRAP_OPERATION_OPT_VAL, SPARK_SQL_WRITES_PREPPED_KEY, OPERATION, STREAMING_CHECKPOINT_IDENTIFIER}
 import org.apache.hudi.cdc.CDCRelation
 import org.apache.hudi.common.fs.FSUtils
 import org.apache.hudi.common.model.HoodieTableType.{COPY_ON_WRITE, MERGE_ON_READ}
@@ -29,7 +29,7 @@ import org.apache.hudi.common.table.{HoodieTableMetaClient, TableSchemaResolver}
 import org.apache.hudi.common.util.ConfigUtils
 import org.apache.hudi.common.util.ValidationUtils.checkState
 import org.apache.hudi.config.HoodieBootstrapConfig.DATA_QUERIES_ONLY
-import org.apache.hudi.config.HoodieWriteConfig.WRITE_CONCURRENCY_MODE
+import org.apache.hudi.config.HoodieWriteConfig.{WRITE_CONCURRENCY_MODE, SPARK_SQL_MERGE_INTO_PREPPED_KEY}
 import org.apache.hudi.exception.HoodieException
 import org.apache.hudi.util.PathUtils
 import org.apache.spark.sql.execution.streaming.{Sink, Source}
@@ -81,7 +81,7 @@ class DefaultSource extends RelationProvider
     val readPathsStr = optParams.get(DataSourceReadOptions.READ_PATHS.key)
 
     if (path.isEmpty && readPathsStr.isEmpty) {
-      throw new HoodieException(s"'path' or '$READ_PATHS' or both must be specified.")
+      throw new HoodieException(s"'path' or '${READ_PATHS.key()}' or both must be specified.")
     }
 
     val readPaths = readPathsStr.map(p => p.split(",").toSeq).getOrElse(Seq())
@@ -137,27 +137,31 @@ class DefaultSource extends RelationProvider
     * @param sqlContext Spark SQL Context
     * @param mode Mode for saving the DataFrame at the destination
     * @param optParams Parameters passed as part of the DataFrame write operation
-    * @param df Spark DataFrame to be written
+    * @param rawDf Spark DataFrame to be written
     * @return Spark Relation
     */
   override def createRelation(sqlContext: SQLContext,
                               mode: SaveMode,
                               optParams: Map[String, String],
-                              df: DataFrame): BaseRelation = {
-    val dfWithoutMetaCols = df.drop(HoodieRecord.HOODIE_META_COLUMNS.asScala:_*)
+                              rawDf: DataFrame): BaseRelation = {
+    val df = if (optParams.getOrDefault(SPARK_SQL_WRITES_PREPPED_KEY, "false").toBoolean || optParams.getOrDefault(SPARK_SQL_MERGE_INTO_PREPPED_KEY, "false").toBoolean) {
+      rawDf // Don't remove meta columns for prepped write.
+    } else {
+      rawDf.drop(HoodieRecord.HOODIE_META_COLUMNS.asScala: _*)
+    }
 
     if (optParams.get(OPERATION.key).contains(BOOTSTRAP_OPERATION_OPT_VAL)) {
-      HoodieSparkSqlWriter.bootstrap(sqlContext, mode, optParams, dfWithoutMetaCols)
+      HoodieSparkSqlWriter.bootstrap(sqlContext, mode, optParams, df)
       HoodieSparkSqlWriter.cleanup()
     } else {
-      val (success, _, _, _, _, _) = HoodieSparkSqlWriter.write(sqlContext, mode, optParams, dfWithoutMetaCols)
+      val (success, _, _, _, _, _) = HoodieSparkSqlWriter.write(sqlContext, mode, optParams, df)
       HoodieSparkSqlWriter.cleanup()
       if (!success) {
         throw new HoodieException("Write to Hudi failed")
       }
     }
 
-    new HoodieEmptyRelation(sqlContext, dfWithoutMetaCols.schema)
+    new HoodieEmptyRelation(sqlContext, df.schema)
   }
 
   override def createSink(sqlContext: SQLContext,
@@ -262,6 +266,9 @@ object DefaultSource {
 
         case (MERGE_ON_READ, QUERY_TYPE_INCREMENTAL_OPT_VAL, _) =>
           new MergeOnReadIncrementalRelation(sqlContext, parameters, metaClient, userSchema)
+
+        case (MERGE_ON_READ, QUERY_TYPE_SNAPSHOT_OPT_VAL, true) =>
+          new HoodieBootstrapMORRelation(sqlContext, userSchema, globPaths, metaClient, parameters)
 
         case (_, _, true) =>
           resolveHoodieBootstrapRelation(sqlContext, globPaths, userSchema, metaClient, parameters)
