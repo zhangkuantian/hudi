@@ -26,8 +26,8 @@ import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodiePartitionMetadata;
 import org.apache.hudi.common.model.HoodieRecord;
-import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.model.HoodieRecordGlobalLocation;
+import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
@@ -179,14 +179,9 @@ public class FileSystemBackedTableMetadata extends AbstractHoodieTableMetadata {
         if (HoodiePartitionMetadata.hasPartitionMetadata(fileSystem, path)) {
           return Stream.of(Pair.of(Option.of(FSUtils.getRelativePartitionPath(dataBasePath.get(), path)), Option.empty()));
         }
-        return Arrays.stream(fileSystem.listStatus(path, p -> {
-          try {
-            return fileSystem.isDirectory(p) && !p.getName().equals(HoodieTableMetaClient.METAFOLDER_NAME);
-          } catch (IOException e) {
-            // noop
-          }
-          return false;
-        })).map(status -> Pair.of(Option.empty(), Option.of(status.getPath())));
+        return Arrays.stream(fileSystem.listStatus(path))
+            .filter(status -> status.isDirectory() && !status.getPath().getName().equals(HoodieTableMetaClient.METAFOLDER_NAME))
+            .map(status -> Pair.of(Option.empty(), Option.of(status.getPath())));
       }, listingParallelism);
       pathsToList.clear();
 
@@ -194,7 +189,7 @@ public class FileSystemBackedTableMetadata extends AbstractHoodieTableMetadata {
           .map(entry -> entry.getKey().get())
           .filter(relativePartitionPath -> fullBoundExpr instanceof Predicates.TrueExpression
               || (Boolean) fullBoundExpr.eval(
-                      extractPartitionValues(partitionFields, relativePartitionPath, urlEncodePartitioningEnabled)))
+              extractPartitionValues(partitionFields, relativePartitionPath, urlEncodePartitioningEnabled)))
           .collect(Collectors.toList()));
 
       Expression partialBoundExpr;
@@ -215,9 +210,9 @@ public class FileSystemBackedTableMetadata extends AbstractHoodieTableMetadata {
       }
 
       pathsToList.addAll(result.stream().filter(entry -> entry.getValue().isPresent()).map(entry -> entry.getValue().get())
-              .filter(path -> partialBoundExpr instanceof Predicates.TrueExpression
-                  || (Boolean) partialBoundExpr.eval(
-                      extractPartitionValues(partitionFields, FSUtils.getRelativePartitionPath(dataBasePath.get(), path), urlEncodePartitioningEnabled)))
+          .filter(path -> partialBoundExpr instanceof Predicates.TrueExpression
+              || (Boolean) partialBoundExpr.eval(
+                  extractPartitionValues(partitionFields, FSUtils.getRelativePartitionPath(dataBasePath.get(), path), urlEncodePartitioningEnabled)))
           .collect(Collectors.toList()));
     }
     return partitionPaths;

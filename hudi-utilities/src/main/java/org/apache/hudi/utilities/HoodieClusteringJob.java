@@ -65,6 +65,10 @@ public class HoodieClusteringJob {
     // Disable async cleaning, will trigger synchronous cleaning manually.
     this.props.put(HoodieCleanConfig.ASYNC_CLEAN.key(), false);
     this.metaClient = UtilHelpers.createMetaClient(jsc, cfg.basePath, true);
+    if (this.metaClient.getTableConfig().isMetadataTableAvailable()) {
+      // add default lock config options if MDT is enabled.
+      UtilHelpers.addLockOptions(cfg.basePath, this.props);
+    }
   }
 
   private TypedProperties readConfigFromFileSystem(JavaSparkContext jsc, Config cfg) {
@@ -208,8 +212,7 @@ public class HoodieClusteringJob {
         // Instant time is not specified
         // Find the earliest scheduled clustering instant for execution
         Option<HoodieInstant> firstClusteringInstant =
-            metaClient.getActiveTimeline().firstInstant(
-                HoodieTimeline.REPLACE_COMMIT_ACTION, HoodieInstant.State.REQUESTED);
+            metaClient.getActiveTimeline().filterPendingReplaceTimeline().firstInstant();
         if (firstClusteringInstant.isPresent()) {
           cfg.clusteringInstantTime = firstClusteringInstant.get().getTimestamp();
           LOG.info("Found the earliest scheduled clustering instant which will be executed: "
