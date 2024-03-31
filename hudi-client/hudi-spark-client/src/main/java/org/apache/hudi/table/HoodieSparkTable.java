@@ -19,6 +19,7 @@
 package org.apache.hudi.table;
 
 import org.apache.hudi.client.WriteStatus;
+import org.apache.hudi.client.utils.SparkPartitionUtils;
 import org.apache.hudi.common.data.HoodieData;
 import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.model.HoodieFailedWritesCleaningPolicy;
@@ -30,12 +31,15 @@ import org.apache.hudi.common.util.Option;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieMetadataException;
+import org.apache.hudi.exception.HoodieUpsertException;
 import org.apache.hudi.index.HoodieIndex;
 import org.apache.hudi.index.SparkHoodieIndexFactory;
+import org.apache.hudi.io.HoodieMergeHandle;
 import org.apache.hudi.metadata.HoodieTableMetadata;
 import org.apache.hudi.metadata.HoodieTableMetadataWriter;
 import org.apache.hudi.metadata.SparkHoodieBackedTableMetadataWriter;
 import org.apache.hadoop.fs.Path;
+import org.apache.hudi.table.action.commit.HoodieMergeHelper;
 import org.apache.spark.TaskContext;
 import org.apache.spark.TaskContext$;
 
@@ -55,6 +59,7 @@ public abstract class HoodieSparkTable<T>
         HoodieTableMetaClient.builder().setConf(context.getHadoopConf().get()).setBasePath(config.getBasePath())
             .setLoadActiveTimelineOnLoad(true).setConsistencyGuardConfig(config.getConsistencyGuardConfig())
             .setLayoutVersion(Option.of(new TimelineLayoutVersion(config.getTimelineLayoutVersion())))
+            .setTimeGeneratorConfig(config.getTimeGeneratorConfig())
             .setFileSystemRetryConfig(config.getFileSystemRetryConfig())
             .setMetaserverConfig(config.getProps()).build();
     return HoodieSparkTable.create(config, context, metaClient);
@@ -91,7 +96,7 @@ public abstract class HoodieSparkTable<T>
   protected Option<HoodieTableMetadataWriter> getMetadataWriter(
       String triggeringInstantTimestamp,
       HoodieFailedWritesCleaningPolicy failedWritesCleaningPolicy) {
-    if (config.isMetadataTableEnabled() || metaClient.getTableConfig().isMetadataTableAvailable()) {
+    if (config.isMetadataTableEnabled()) {
       // if any partition is deleted, we need to reload the metadata table writer so that new table configs are picked up
       // to reflect the delete mdt partitions.
       deleteMetadataIndexIfNecessary();
@@ -112,6 +117,7 @@ public abstract class HoodieSparkTable<T>
         throw new HoodieMetadataException("Checking existence of metadata table failed", e);
       }
     } else {
+      // if metadata is not enabled in the write config, we should try and delete it (if present)
       maybeDeleteMetadataTable();
     }
 
@@ -123,4 +129,22 @@ public abstract class HoodieSparkTable<T>
     final TaskContext taskContext = TaskContext.get();
     return () -> TaskContext$.MODULE$.setTaskContext(taskContext);
   }
+
+  @Override
+  public void runMerge(HoodieMergeHandle<?, ?, ?, ?> upsertHandle, String instantTime, String fileId) throws IOException {
+    if (upsertHandle.getOldFilePath() == null) {
+      throw new HoodieUpsertException("Error in finding the old file path at commit " + instantTime + " for fileId: " + fileId);
+    } else {
+      if (upsertHandle.baseFileForMerge().getBootstrapBaseFile().isPresent()) {
+        Option<String[]> partitionFields = getMetaClient().getTableConfig().getPartitionFields();
+        Object[] partitionValues = SparkPartitionUtils.getPartitionFieldVals(partitionFields, upsertHandle.getPartitionPath(),
+                getMetaClient().getTableConfig().getBootstrapBasePath().get(),
+                upsertHandle.getWriterSchema(), getHadoopConf());
+        upsertHandle.setPartitionFields(partitionFields);
+        upsertHandle.setPartitionValues(partitionValues);
+      }
+      HoodieMergeHelper.newInstance().runMerge(this, upsertHandle);
+    }
+  }
+
 }

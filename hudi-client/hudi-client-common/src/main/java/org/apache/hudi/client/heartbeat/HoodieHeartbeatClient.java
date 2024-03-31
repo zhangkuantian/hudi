@@ -22,6 +22,7 @@ import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.util.ValidationUtils;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieHeartbeatException;
+import org.apache.hudi.storage.StoragePath;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -33,10 +34,10 @@ import javax.annotation.concurrent.NotThreadSafe;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.Serializable;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.apache.hudi.common.heartbeat.HoodieHeartbeatUtils.getLastHeartbeatTime;
 
@@ -67,7 +68,7 @@ public class HoodieHeartbeatClient implements AutoCloseable, Serializable {
     this.heartbeatFolderPath = HoodieTableMetaClient.getHeartbeatFolderPath(basePath);
     this.heartbeatIntervalInMs = heartbeatIntervalInMs;
     this.maxAllowableHeartbeatIntervalInMs = this.heartbeatIntervalInMs * numTolerableHeartbeatMisses;
-    this.instantToHeartbeatMap = new HashMap<>();
+    this.instantToHeartbeatMap = new ConcurrentHashMap<>();
   }
 
   static class Heartbeat {
@@ -226,7 +227,8 @@ public class HoodieHeartbeatClient implements AutoCloseable, Serializable {
   }
 
   public static Boolean heartbeatExists(FileSystem fs, String basePath, String instantTime) throws IOException {
-    Path heartbeatFilePath = new Path(HoodieTableMetaClient.getHeartbeatFolderPath(basePath) + Path.SEPARATOR + instantTime);
+    Path heartbeatFilePath = new Path(HoodieTableMetaClient.getHeartbeatFolderPath(basePath)
+        + StoragePath.SEPARATOR + instantTime);
     return fs.exists(heartbeatFilePath);
   }
 
@@ -253,7 +255,7 @@ public class HoodieHeartbeatClient implements AutoCloseable, Serializable {
     try {
       Long newHeartbeatTime = System.currentTimeMillis();
       OutputStream outputStream =
-          this.fs.create(new Path(heartbeatFolderPath + Path.SEPARATOR + instantTime), true);
+          this.fs.create(new Path(heartbeatFolderPath + StoragePath.SEPARATOR + instantTime), true);
       outputStream.close();
       Heartbeat heartbeat = instantToHeartbeatMap.get(instantTime);
       if (heartbeat.getLastHeartbeatTime() != null && isHeartbeatExpired(instantTime)) {
@@ -266,6 +268,11 @@ public class HoodieHeartbeatClient implements AutoCloseable, Serializable {
       heartbeat.setLastHeartbeatTime(newHeartbeatTime);
       heartbeat.setNumHeartbeats(heartbeat.getNumHeartbeats() + 1);
     } catch (IOException io) {
+      Boolean isHeartbeatStopped = instantToHeartbeatMap.get(instantTime).isHeartbeatStopped;
+      if (isHeartbeatStopped) {
+        LOG.warn(String.format("update heart beat failed, because the instant time %s was stopped ? : %s", instantTime, isHeartbeatStopped));
+        return;
+      }
       throw new HoodieHeartbeatException("Unable to generate heartbeat for instant " + instantTime, io);
     }
   }

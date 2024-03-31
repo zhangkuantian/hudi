@@ -27,6 +27,7 @@ import org.apache.hudi.utilities.schema.SchemaProvider;
 import org.apache.hudi.utilities.sources.helpers.CloudDataFetcher;
 import org.apache.hudi.utilities.sources.helpers.CloudObjectIncrCheckpoint;
 import org.apache.hudi.utilities.sources.helpers.CloudObjectMetadata;
+import org.apache.hudi.utilities.sources.helpers.CloudObjectsSelectorCommon;
 import org.apache.hudi.utilities.sources.helpers.IncrSourceHelper;
 import org.apache.hudi.utilities.sources.helpers.IncrSourceHelper.MissingCheckpointStrategy;
 import org.apache.hudi.utilities.sources.helpers.QueryInfo;
@@ -48,11 +49,9 @@ import static org.apache.hudi.common.util.ConfigUtils.getBooleanWithAltKeys;
 import static org.apache.hudi.common.util.ConfigUtils.getIntWithAltKeys;
 import static org.apache.hudi.common.util.ConfigUtils.getStringWithAltKeys;
 import static org.apache.hudi.common.util.StringUtils.isNullOrEmpty;
-import static org.apache.hudi.utilities.config.CloudSourceConfig.DATAFILE_FORMAT;
 import static org.apache.hudi.utilities.config.CloudSourceConfig.ENABLE_EXISTS_CHECK;
 import static org.apache.hudi.utilities.config.HoodieIncrSourceConfig.HOODIE_SRC_BASE_PATH;
 import static org.apache.hudi.utilities.config.HoodieIncrSourceConfig.NUM_INSTANTS_PER_FETCH;
-import static org.apache.hudi.utilities.config.HoodieIncrSourceConfig.SOURCE_FILE_FORMAT;
 import static org.apache.hudi.utilities.sources.helpers.IncrSourceHelper.generateQueryInfo;
 import static org.apache.hudi.utilities.sources.helpers.IncrSourceHelper.getHollowCommitHandleMode;
 import static org.apache.hudi.utilities.sources.helpers.IncrSourceHelper.getMissingCheckpointStrategy;
@@ -113,9 +112,8 @@ public class GcsEventsHoodieIncrSource extends HoodieIncrSource {
   private final GcsObjectMetadataFetcher gcsObjectMetadataFetcher;
   private final CloudDataFetcher gcsObjectDataFetcher;
   private final QueryRunner queryRunner;
-
-  public static final String GCS_OBJECT_KEY = "name";
-  public static final String GCS_OBJECT_SIZE = "size";
+  private final Option<SchemaProvider> schemaProvider;
+  private final Option<SnapshotLoadQuerySplitter> snapshotLoadQuerySplitter;
 
   private static final Logger LOG = LoggerFactory.getLogger(GcsEventsHoodieIncrSource.class);
 
@@ -123,8 +121,8 @@ public class GcsEventsHoodieIncrSource extends HoodieIncrSource {
                                    SchemaProvider schemaProvider) {
 
     this(props, jsc, spark, schemaProvider,
-        new GcsObjectMetadataFetcher(props, getSourceFileFormat(props)),
-        new CloudDataFetcher(props, getStringWithAltKeys(props, DATAFILE_FORMAT, true)),
+        new GcsObjectMetadataFetcher(props),
+        new CloudDataFetcher(props),
         new QueryRunner(spark, props)
     );
   }
@@ -142,6 +140,8 @@ public class GcsEventsHoodieIncrSource extends HoodieIncrSource {
     this.gcsObjectMetadataFetcher = gcsObjectMetadataFetcher;
     this.gcsObjectDataFetcher = gcsObjectDataFetcher;
     this.queryRunner = queryRunner;
+    this.schemaProvider = Option.ofNullable(schemaProvider);
+    this.snapshotLoadQuerySplitter = SnapshotLoadQuerySplitter.getInstance(props);
 
     LOG.info("srcPath: " + srcPath);
     LOG.info("missingCheckpointStrategy: " + missingCheckpointStrategy);
@@ -158,7 +158,8 @@ public class GcsEventsHoodieIncrSource extends HoodieIncrSource {
         sparkContext, srcPath, numInstantsPerFetch,
         Option.of(cloudObjectIncrCheckpoint.getCommit()),
         missingCheckpointStrategy, handlingMode, HoodieRecord.COMMIT_TIME_METADATA_FIELD,
-        GCS_OBJECT_KEY, GCS_OBJECT_SIZE, true,
+        CloudObjectsSelectorCommon.GCS_OBJECT_KEY,
+        CloudObjectsSelectorCommon.GCS_OBJECT_SIZE, true,
         Option.ofNullable(cloudObjectIncrCheckpoint.getKey()));
     LOG.info("Querying GCS with:" + cloudObjectIncrCheckpoint + " and queryInfo:" + queryInfo);
 
@@ -168,11 +169,13 @@ public class GcsEventsHoodieIncrSource extends HoodieIncrSource {
       return Pair.of(Option.empty(), queryInfo.getStartInstant());
     }
 
-    Dataset<Row> cloudObjectMetadataDF = queryRunner.run(queryInfo);
+    Pair<QueryInfo, Dataset<Row>> queryInfoDatasetPair = queryRunner.run(queryInfo, snapshotLoadQuerySplitter);
+    Dataset<Row> filteredSourceData = gcsObjectMetadataFetcher.applyFilter(queryInfoDatasetPair.getRight());
+    queryInfo = queryInfoDatasetPair.getLeft();
     LOG.info("Adjusting end checkpoint:" + queryInfo.getEndInstant() + " based on sourceLimit :" + sourceLimit);
     Pair<CloudObjectIncrCheckpoint, Option<Dataset<Row>>> checkPointAndDataset =
         IncrSourceHelper.filterAndGenerateCheckpointBasedOnSourceLimit(
-            cloudObjectMetadataDF, sourceLimit, queryInfo, cloudObjectIncrCheckpoint);
+            filteredSourceData, sourceLimit, queryInfo, cloudObjectIncrCheckpoint);
     if (!checkPointAndDataset.getRight().isPresent()) {
       LOG.info("Empty source, returning endpoint:" + queryInfo.getEndInstant());
       return Pair.of(Option.empty(), queryInfo.getEndInstant());
@@ -186,12 +189,7 @@ public class GcsEventsHoodieIncrSource extends HoodieIncrSource {
   private Pair<Option<Dataset<Row>>, String> extractData(QueryInfo queryInfo, Dataset<Row> cloudObjectMetadataDF) {
     List<CloudObjectMetadata> cloudObjectMetadata = gcsObjectMetadataFetcher.getGcsObjectMetadata(sparkContext, cloudObjectMetadataDF, checkIfFileExists);
     LOG.info("Total number of files to process :" + cloudObjectMetadata.size());
-    Option<Dataset<Row>> fileDataRows = gcsObjectDataFetcher.getCloudObjectDataDF(sparkSession, cloudObjectMetadata, props);
+    Option<Dataset<Row>> fileDataRows = gcsObjectDataFetcher.getCloudObjectDataDF(sparkSession, cloudObjectMetadata, props, schemaProvider);
     return Pair.of(fileDataRows, queryInfo.getEndInstant());
   }
-
-  private static String getSourceFileFormat(TypedProperties props) {
-    return getStringWithAltKeys(props, SOURCE_FILE_FORMAT, true);
-  }
-
 }

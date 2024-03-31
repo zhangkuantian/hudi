@@ -178,23 +178,23 @@ public class TestHoodieMultiTableDeltaStreamer extends HoodieDeltaStreamerTestBa
     HoodieMultiTableDeltaStreamer streamer = new HoodieMultiTableDeltaStreamer(cfg, jsc);
     List<TableExecutionContext> executionContexts = streamer.getTableExecutionContexts();
     TypedProperties properties = executionContexts.get(1).getProperties();
-    properties.setProperty("hoodie.deltastreamer.schemaprovider.source.schema.file", basePath + "/source_uber.avsc");
-    properties.setProperty("hoodie.deltastreamer.schemaprovider.target.schema.file", basePath + "/target_uber.avsc");
+    properties.setProperty("hoodie.streamer.schemaprovider.source.schema.file", basePath + "/source_uber.avsc");
+    properties.setProperty("hoodie.streamer.schemaprovider.target.schema.file", basePath + "/target_uber.avsc");
     properties.setProperty("hoodie.datasource.write.partitionpath.field", "timestamp");
-    properties.setProperty("hoodie.deltastreamer.source.kafka.topic", topicName2);
+    properties.setProperty("hoodie.streamer.source.kafka.topic", topicName2);
     executionContexts.get(1).setProperties(properties);
     TypedProperties properties1 = executionContexts.get(0).getProperties();
-    properties1.setProperty("hoodie.deltastreamer.schemaprovider.source.schema.file", basePath + "/source_short_trip_uber.avsc");
-    properties1.setProperty("hoodie.deltastreamer.schemaprovider.target.schema.file", basePath + "/target_short_trip_uber.avsc");
+    properties1.setProperty("hoodie.streamer.schemaprovider.source.schema.file", basePath + "/source_short_trip_uber.avsc");
+    properties1.setProperty("hoodie.streamer.schemaprovider.target.schema.file", basePath + "/target_short_trip_uber.avsc");
     properties1.setProperty("hoodie.datasource.write.partitionpath.field", "timestamp");
-    properties1.setProperty("hoodie.deltastreamer.source.kafka.topic", topicName1);
+    properties1.setProperty("hoodie.streamer.source.kafka.topic", topicName1);
     executionContexts.get(0).setProperties(properties1);
     String targetBasePath1 = executionContexts.get(0).getConfig().targetBasePath;
     String targetBasePath2 = executionContexts.get(1).getConfig().targetBasePath;
     streamer.sync();
 
-    TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(5, targetBasePath1, sqlContext);
-    TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(10, targetBasePath2, sqlContext);
+    assertRecordCount(5, targetBasePath1, sqlContext);
+    assertRecordCount(10, targetBasePath2, sqlContext);
 
     //insert updates for already existing records in kafka topics
     testUtils.sendMessages(topicName1, Helpers.jsonifyRecords(dataGenerator.generateUpdatesAsPerSchema("001", 5, HoodieTestDataGenerator.TRIP_SCHEMA)));
@@ -209,8 +209,8 @@ public class TestHoodieMultiTableDeltaStreamer extends HoodieDeltaStreamerTestBa
     assertTrue(streamer.getFailedTables().isEmpty());
 
     //assert the record count matches now
-    TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(5, targetBasePath1, sqlContext);
-    TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(10, targetBasePath2, sqlContext);
+    assertRecordCount(5, targetBasePath1, sqlContext);
+    assertRecordCount(10, targetBasePath2, sqlContext);
     testNum++;
   }
 
@@ -263,7 +263,7 @@ public class TestHoodieMultiTableDeltaStreamer extends HoodieDeltaStreamerTestBa
       switch (tableExecutionContext.getTableName()) {
         case "dummy_table_short_trip":
           String tableLevelKeyGeneratorClass = tableExecutionContext.getProperties().getString(DataSourceWriteOptions.KEYGENERATOR_CLASS_NAME().key());
-          assertEquals(TestHoodieDeltaStreamer.TestTableLevelGenerator.class.getName(), tableLevelKeyGeneratorClass);
+          assertEquals(TestHoodieDeltaStreamer.TestGenerator.class.getName(), tableLevelKeyGeneratorClass);
           List<String> transformerClass = tableExecutionContext.getConfig().transformerClassNames;
           assertEquals(1, transformerClass.size());
           assertEquals("org.apache.hudi.utilities.deltastreamer.TestHoodieDeltaStreamer$TestIdentityTransformer", transformerClass.get(0));
@@ -288,7 +288,7 @@ public class TestHoodieMultiTableDeltaStreamer extends HoodieDeltaStreamerTestBa
     props.setProperty("include", "base.properties");
     props.setProperty("hoodie.datasource.write.recordkey.field", "_row_key");
     props.setProperty("hoodie.datasource.write.partitionpath.field", "partition_path");
-    props.setProperty("hoodie.deltastreamer.source.dfs.root", parquetSourceRoot);
+    props.setProperty("hoodie.streamer.source.dfs.root", parquetSourceRoot);
     return props;
   }
 
@@ -307,7 +307,7 @@ public class TestHoodieMultiTableDeltaStreamer extends HoodieDeltaStreamerTestBa
 
   private void syncAndVerify(HoodieMultiTableDeltaStreamer streamer, String targetBasePath1, String targetBasePath2, long table1ExpectedRecords, long table2ExpectedRecords) {
     streamer.sync();
-    TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(table1ExpectedRecords, targetBasePath1, sqlContext);
-    TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(table2ExpectedRecords, targetBasePath2, sqlContext);
+    assertRecordCount(table1ExpectedRecords, targetBasePath1, sqlContext);
+    assertRecordCount(table2ExpectedRecords, targetBasePath2, sqlContext);
   }
 }

@@ -24,7 +24,6 @@ import org.apache.hudi.common.model.HoodieAvroPayload;
 import org.apache.hudi.common.model.HoodieAvroRecord;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
-import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.exception.HoodieIOException;
 
@@ -38,6 +37,7 @@ import org.apache.avro.io.DecoderFactory;
 import org.apache.avro.util.Utf8;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
@@ -156,7 +156,7 @@ public final class SchemaTestUtil {
 
   public List<IndexedRecord> generateHoodieTestRecords(int from, int limit)
       throws IOException, URISyntaxException {
-    String instantTime = HoodieActiveTimeline.createNewInstantTime();
+    String instantTime = InProcessTimeGenerator.createNewInstantTime();
     List<String> recorKeyList = genRandomUUID(limit, Collections.emptyList());
     return generateHoodieTestRecords(from, recorKeyList, "0000/00/00", instantTime);
   }
@@ -272,8 +272,8 @@ public final class SchemaTestUtil {
   }
 
   public static Schema getSchemaFromResource(Class<?> clazz, String name, boolean withHoodieMetadata) {
-    try {
-      Schema schema = new Schema.Parser().parse(clazz.getResourceAsStream(name));
+    try (InputStream schemaInputStream = clazz.getResourceAsStream(name)) {
+      Schema schema = new Schema.Parser().parse(schemaInputStream);
       return withHoodieMetadata ? HoodieAvroUtils.addMetadataFields(schema) : schema;
     } catch (IOException e) {
       throw new RuntimeException(String.format("Failed to get schema from resource `%s` for class `%s`", name, clazz.getName()));

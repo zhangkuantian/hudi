@@ -19,8 +19,7 @@
 
 package org.apache.hudi.functional
 
-import org.apache.hudi.common.config.HoodieMetadataConfig
-import org.apache.hudi.common.fs.FSUtils
+import org.apache.hudi.common.config.{HoodieMetadataConfig, HoodieReaderConfig}
 import org.apache.hudi.common.table.HoodieTableMetaClient
 import org.apache.hudi.common.testutils.HoodieTestDataGenerator
 import org.apache.hudi.common.testutils.RawTripTestPayload.recordsToStrings
@@ -29,6 +28,9 @@ import org.apache.hudi.config.HoodieWriteConfig
 import org.apache.hudi.testutils.SparkClientFunctionalTestHarness
 import org.apache.hudi.testutils.SparkClientFunctionalTestHarness.getSparkSqlConf
 import org.apache.hudi.{DataSourceReadOptions, DataSourceWriteOptions, HoodieDataSourceHelpers}
+import org.apache.hudi.common.fs.FSUtils
+import org.apache.hudi.hadoop.fs.HadoopFSUtils
+
 import org.apache.spark.SparkConf
 import org.apache.spark.sql._
 import org.apache.spark.sql.functions.{col, lit}
@@ -46,12 +48,12 @@ class TestMORDataSourceStorage extends SparkClientFunctionalTestHarness {
 
   @ParameterizedTest
   @CsvSource(Array(
-    "true,",
-    "true,fare.currency",
-    "false,",
-    "false,fare.currency"
+    "true,,false",
+    "true,fare.currency,false",
+    "false,,false",
+    "false,fare.currency,true"
   ))
-  def testMergeOnReadStorage(isMetadataEnabled: Boolean, preCombineField: String): Unit = {
+  def testMergeOnReadStorage(isMetadataEnabled: Boolean, preCombineField: String, useFileGroupReader: Boolean): Unit = {
     val commonOpts = Map(
       "hoodie.insert.shuffle.parallelism" -> "4",
       "hoodie.upsert.shuffle.parallelism" -> "4",
@@ -70,8 +72,11 @@ class TestMORDataSourceStorage extends SparkClientFunctionalTestHarness {
     if (!StringUtils.isNullOrEmpty(preCombineField)) {
       options += (DataSourceWriteOptions.PRECOMBINE_FIELD.key() -> preCombineField)
     }
+    if (useFileGroupReader) {
+      options += (HoodieReaderConfig.FILE_GROUP_READER_ENABLED.key() -> String.valueOf(useFileGroupReader))
+    }
     val dataGen = new HoodieTestDataGenerator(0xDEEF)
-    val fs = FSUtils.getFs(basePath, spark.sparkContext.hadoopConfiguration)
+    val fs = HadoopFSUtils.getFs(basePath, spark.sparkContext.hadoopConfiguration)
     // Bulk Insert Operation
     val records1 = recordsToStrings(dataGen.generateInserts("001", 100)).toList
     val inputDF1: Dataset[Row] = spark.read.json(spark.sparkContext.parallelize(records1, 2))
@@ -138,6 +143,8 @@ class TestMORDataSourceStorage extends SparkClientFunctionalTestHarness {
       "hoodie.upsert.shuffle.parallelism" -> "4",
       "hoodie.bulkinsert.shuffle.parallelism" -> "2",
       "hoodie.delete.shuffle.parallelism" -> "1",
+      "hoodie.merge.small.file.group.candidates.limit" -> "0",
+      HoodieWriteConfig.WRITE_RECORD_POSITIONS.key -> "true",
       DataSourceWriteOptions.RECORDKEY_FIELD.key -> "_row_key",
       DataSourceWriteOptions.PARTITIONPATH_FIELD.key -> "partition_path",
       DataSourceWriteOptions.PRECOMBINE_FIELD.key -> "timestamp",
@@ -147,7 +154,7 @@ class TestMORDataSourceStorage extends SparkClientFunctionalTestHarness {
     var options: Map[String, String] = commonOpts
     options += (DataSourceWriteOptions.PRECOMBINE_FIELD.key() -> preCombineField)
     val dataGen = new HoodieTestDataGenerator(0xDEEF)
-    val fs = FSUtils.getFs(basePath, spark.sparkContext.hadoopConfiguration)
+    val fs = HadoopFSUtils.getFs(basePath, spark.sparkContext.hadoopConfiguration)
     // Bulk Insert Operation
     val records1 = recordsToStrings(dataGen.generateInserts("001", 100)).toList
     val inputDF1: Dataset[Row] = spark.read.json(spark.sparkContext.parallelize(records1, 2))

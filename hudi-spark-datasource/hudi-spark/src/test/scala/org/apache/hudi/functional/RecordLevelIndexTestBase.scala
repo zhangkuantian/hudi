@@ -22,10 +22,9 @@ import org.apache.hudi.DataSourceWriteOptions
 import org.apache.hudi.DataSourceWriteOptions._
 import org.apache.hudi.client.SparkRDDWriteClient
 import org.apache.hudi.client.common.HoodieSparkEngineContext
-import org.apache.hudi.client.utils.MetadataConversionUtils
-import org.apache.hudi.common.config.HoodieMetadataConfig
+import org.apache.hudi.common.config.{HoodieMetadataConfig, TypedProperties}
 import org.apache.hudi.common.model._
-import org.apache.hudi.common.table.timeline.HoodieInstant
+import org.apache.hudi.common.table.timeline.{HoodieInstant, MetadataConversionUtils}
 import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient}
 import org.apache.hudi.common.testutils.RawTripTestPayload.recordsToStrings
 import org.apache.hudi.config.HoodieWriteConfig
@@ -34,15 +33,13 @@ import org.apache.hudi.testutils.HoodieSparkClientTestBase
 import org.apache.hudi.util.JavaConversions
 import org.apache.spark.sql._
 import org.apache.spark.sql.functions.{col, not}
-import org.junit.jupiter.api.Assertions.{assertEquals, assertTrue}
+import org.junit.jupiter.api.Assertions.{assertEquals, assertFalse, assertTrue}
 import org.junit.jupiter.api._
 
-import java.util.Properties
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.stream.Collectors
 import scala.collection.JavaConverters._
 import scala.collection.{JavaConverters, mutable}
-import scala.util.Using
 
 class RecordLevelIndexTestBase extends HoodieSparkClientTestBase {
   var spark: SparkSession = _
@@ -230,8 +227,7 @@ class RecordLevelIndexTestBase extends HoodieSparkClientTestBase {
   }
 
   protected def getWriteConfig(hudiOpts: Map[String, String]): HoodieWriteConfig = {
-    val props = new Properties()
-    props.putAll(JavaConverters.mapAsJavaMapConverter(hudiOpts).asJava)
+    val props = TypedProperties.fromMap(JavaConverters.mapAsJavaMapConverter(hudiOpts).asJava)
     HoodieWriteConfig.newBuilder()
       .withProps(props)
       .withPath(basePath)
@@ -258,7 +254,10 @@ class RecordLevelIndexTestBase extends HoodieSparkClientTestBase {
       val recordKey: String = row.getAs("_hoodie_record_key")
       val partitionPath: String = row.getAs("_hoodie_partition_path")
       val fileName: String = row.getAs("_hoodie_file_name")
-      val recordLocation = recordIndexMap.get(recordKey)
+      val recordLocations = recordIndexMap.get(recordKey)
+      assertFalse(recordLocations.isEmpty)
+      // assuming no duplicate keys for now
+      val recordLocation = recordLocations.get(0)
       assertEquals(partitionPath, recordLocation.getPartitionPath)
       assertTrue(fileName.startsWith(recordLocation.getFileId), fileName + " should start with " + recordLocation.getFileId)
     }

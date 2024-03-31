@@ -32,6 +32,7 @@ import org.apache.hudi.common.table.timeline.HoodieTimeline;
 import org.apache.hudi.common.table.view.HoodieTableFileSystemView;
 import org.apache.hudi.common.table.view.TableFileSystemView.BaseFileOnlyView;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
@@ -47,6 +48,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -61,6 +63,7 @@ import static org.apache.hudi.utilities.UtilHelpers.buildSparkConf;
  */
 public class HoodieSnapshotCopier implements Serializable {
 
+  private static final long serialVersionUID = 1L;
   private static final Logger LOG = LoggerFactory.getLogger(HoodieSnapshotCopier.class);
 
   static class Config implements Serializable {
@@ -71,17 +74,13 @@ public class HoodieSnapshotCopier implements Serializable {
     @Parameter(names = {"--output-path", "-op"}, description = "The snapshot output path", required = true)
     String outputPath = null;
 
-    @Parameter(names = {"--date-partitioned", "-dp"}, description = "Can we assume date partitioning?")
-    boolean shouldAssumeDatePartitioning = false;
-
     @Parameter(names = {"--use-file-listing-from-metadata"}, description = "Fetch file listing from Hudi's metadata")
     public Boolean useFileListingFromMetadata = HoodieMetadataConfig.DEFAULT_METADATA_ENABLE_FOR_READERS;
   }
 
   public void snapshot(JavaSparkContext jsc, String baseDir, final String outputDir,
-                       final boolean shouldAssumeDatePartitioning,
                        final boolean useFileListingFromMetadata) throws IOException {
-    FileSystem fs = FSUtils.getFs(baseDir, jsc.hadoopConfiguration());
+    FileSystem fs = HadoopFSUtils.getFs(baseDir, jsc.hadoopConfiguration());
     final SerializableConfiguration serConf = new SerializableConfiguration(jsc.hadoopConfiguration());
     final HoodieTableMetaClient tableMetadata = HoodieTableMetaClient.builder().setConf(fs.getConf()).setBasePath(baseDir).build();
     final BaseFileOnlyView fsView = new HoodieTableFileSystemView(tableMetadata,
@@ -98,7 +97,7 @@ public class HoodieSnapshotCopier implements Serializable {
     LOG.info(String.format("Starting to snapshot latest version files which are also no-late-than %s.",
         latestCommitTimestamp));
 
-    List<String> partitions = FSUtils.getAllPartitionPaths(context, baseDir, useFileListingFromMetadata, shouldAssumeDatePartitioning);
+    List<String> partitions = FSUtils.getAllPartitionPaths(context, baseDir, useFileListingFromMetadata);
     if (partitions.size() > 0) {
       LOG.info(String.format("The job needs to copy %d partitions.", partitions.size()));
 
@@ -113,7 +112,7 @@ public class HoodieSnapshotCopier implements Serializable {
 
       List<Tuple2<String, String>> filesToCopy = context.flatMap(partitions, partition -> {
         // Only take latest version files <= latestCommit.
-        FileSystem fs1 = FSUtils.getFs(baseDir, serConf.newCopy());
+        FileSystem fs1 = HadoopFSUtils.getFs(baseDir, serConf.newCopy());
         List<Tuple2<String, String>> filePaths = new ArrayList<>();
         Stream<HoodieBaseFile> dataFiles = fsView.getLatestBaseFilesBeforeOrOn(partition, latestCommitTimestamp);
         dataFiles.forEach(hoodieDataFile -> filePaths.add(new Tuple2<>(partition, hoodieDataFile.getPath())));
@@ -132,7 +131,7 @@ public class HoodieSnapshotCopier implements Serializable {
         String partition = tuple._1();
         Path sourceFilePath = new Path(tuple._2());
         Path toPartitionPath = FSUtils.getPartitionPath(outputDir, partition);
-        FileSystem ifs = FSUtils.getFs(baseDir, serConf.newCopy());
+        FileSystem ifs = HadoopFSUtils.getFs(baseDir, serConf.newCopy());
 
         if (!ifs.exists(toPartitionPath)) {
           ifs.mkdirs(toPartitionPath);
@@ -144,15 +143,19 @@ public class HoodieSnapshotCopier implements Serializable {
       // Also copy the .commit files
       LOG.info(String.format("Copying .commit files which are no-late-than %s.", latestCommitTimestamp));
       FileStatus[] commitFilesToCopy =
-          fs.listStatus(new Path(baseDir + "/" + HoodieTableMetaClient.METAFOLDER_NAME), (commitFilePath) -> {
-            if (commitFilePath.getName().equals(HoodieTableConfig.HOODIE_PROPERTIES_FILE)) {
-              return true;
-            } else {
-              String instantTime = FSUtils.getCommitFromCommitFile(commitFilePath.getName());
-              return HoodieTimeline.compareTimestamps(instantTime, HoodieTimeline.LESSER_THAN_OR_EQUALS, latestCommitTimestamp
-              );
-            }
-          });
+          Arrays.stream(fs.listStatus(new Path(baseDir + "/" + HoodieTableMetaClient.METAFOLDER_NAME)))
+              .filter(fileStatus -> {
+                Path path = fileStatus.getPath();
+                if (path.getName().equals(HoodieTableConfig.HOODIE_PROPERTIES_FILE)) {
+                  return true;
+                } else {
+                  if (fileStatus.isDirectory()) {
+                    return false;
+                  }
+                  String instantTime = FSUtils.getCommitFromCommitFile(path.getName());
+                  return HoodieTimeline.compareTimestamps(instantTime, HoodieTimeline.LESSER_THAN_OR_EQUALS, latestCommitTimestamp);
+                }
+              }).toArray(FileStatus[]::new);
       for (FileStatus commitStatus : commitFilesToCopy) {
         Path targetFilePath =
             new Path(outputDir + "/" + HoodieTableMetaClient.METAFOLDER_NAME + "/" + commitStatus.getPath().getName());
@@ -191,7 +194,7 @@ public class HoodieSnapshotCopier implements Serializable {
 
     // Copy
     HoodieSnapshotCopier copier = new HoodieSnapshotCopier();
-    copier.snapshot(jsc, cfg.basePath, cfg.outputPath, cfg.shouldAssumeDatePartitioning, cfg.useFileListingFromMetadata);
+    copier.snapshot(jsc, cfg.basePath, cfg.outputPath, cfg.useFileListingFromMetadata);
 
     // Stop the job
     jsc.stop();

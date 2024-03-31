@@ -19,6 +19,8 @@
 package org.apache.hudi.internal.schema.utils;
 
 import org.apache.hudi.avro.HoodieAvroUtils;
+import org.apache.hudi.common.testutils.SchemaTestUtil;
+import org.apache.hudi.exception.HoodieNullSchemaTypeException;
 import org.apache.hudi.internal.schema.InternalSchema;
 import org.apache.hudi.internal.schema.InternalSchemaBuilder;
 import org.apache.hudi.internal.schema.Type;
@@ -44,6 +46,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests {@link AvroSchemaEvolutionUtils}.
@@ -184,6 +189,37 @@ public class TestAvroSchemaEvolutionUtils {
   }
 
   @Test
+  public void testNullFieldType() {
+    Schema schema = create("t1",
+        new Schema.Field("nullField", Schema.create(Schema.Type.NULL), null, JsonProperties.NULL_VALUE));
+    Throwable t = assertThrows(HoodieNullSchemaTypeException.class,
+        () -> AvroInternalSchemaConverter.convert(schema));
+    assertTrue(t.getMessage().contains("'t1.nullField'"));
+
+    Schema schemaArray = create("t2",
+        new Schema.Field("nullArray", Schema.createArray(Schema.create(Schema.Type.NULL)), null, null));
+    t = assertThrows(HoodieNullSchemaTypeException.class,
+        () -> AvroInternalSchemaConverter.convert(schemaArray));
+    assertTrue(t.getMessage().contains("'t2.nullArray.element'"));
+
+    Schema schemaMap = create("t3",
+        new Schema.Field("nullMap", Schema.createMap(Schema.create(Schema.Type.NULL)), null, null));
+    t = assertThrows(HoodieNullSchemaTypeException.class,
+        () -> AvroInternalSchemaConverter.convert(schemaMap));
+    assertTrue(t.getMessage().contains("'t3.nullMap.value'"));
+
+
+    Schema schemaComplex = create("t4",
+        new Schema.Field("complexField", Schema.createMap(
+            create("nestedStruct",
+                new Schema.Field("nestedArray", Schema.createArray(Schema.createMap(Schema.create(Schema.Type.NULL))),
+                    null, null))), null, null));
+    t = assertThrows(HoodieNullSchemaTypeException.class,
+        () -> AvroInternalSchemaConverter.convert(schemaComplex));
+    assertTrue(t.getMessage().contains("'t4.nestedStruct.nestedArray.element.value'"));
+  }
+
+  @Test
   public void testRefreshNewId() {
     Types.RecordType record = Types.RecordType.get(Types.Field.get(0, false, "id", Types.IntType.get()),
         Types.Field.get(1, true, "data", Types.StringType.get()),
@@ -205,6 +241,20 @@ public class TestAvroSchemaEvolutionUtils {
             Types.RecordType.get(Types.Field.get(108, false, "lat", Types.FloatType.get()), Types.Field.get(109, false, "long", Types.FloatType.get())), false))
     );
     Assertions.assertEquals(newRecord, recordWithNewId);
+  }
+
+  @Test
+  public void testFixNullOrdering() {
+    Schema schema = SchemaTestUtil.getSchemaFromResource(TestAvroSchemaEvolutionUtils.class, "/nullWrong.avsc");
+    Schema expectedSchema = SchemaTestUtil.getSchemaFromResource(TestAvroSchemaEvolutionUtils.class, "/nullRight.avsc");
+    Assertions.assertEquals(expectedSchema, AvroInternalSchemaConverter.fixNullOrdering(schema));
+    Assertions.assertEquals(expectedSchema, AvroInternalSchemaConverter.fixNullOrdering(expectedSchema));
+  }
+
+  @Test
+  public void testFixNullOrderingSameSchemaCheck() {
+    Schema schema = SchemaTestUtil.getSchemaFromResource(TestAvroSchemaEvolutionUtils.class, "/source_evolved.avsc");
+    Assertions.assertEquals(schema, AvroInternalSchemaConverter.fixNullOrdering(schema));
   }
 
   public enum Enum {

@@ -27,7 +27,7 @@ import org.apache.hudi.common.table.timeline.HoodieTimeline;
 import org.apache.hudi.common.table.timeline.TimelineUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.ReflectionUtils;
-import org.apache.hudi.hadoop.CachingPath;
+import org.apache.hudi.hadoop.fs.CachingPath;
 import org.apache.hudi.sync.common.model.Partition;
 import org.apache.hudi.sync.common.model.PartitionEvent;
 import org.apache.hudi.sync.common.model.PartitionValueExtractor;
@@ -44,7 +44,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static org.apache.hudi.sync.common.HoodieSyncConfig.META_SYNC_ASSUME_DATE_PARTITION;
 import static org.apache.hudi.sync.common.HoodieSyncConfig.META_SYNC_BASE_PATH;
 import static org.apache.hudi.sync.common.HoodieSyncConfig.META_SYNC_PARTITION_EXTRACTOR_CLASS;
 import static org.apache.hudi.sync.common.HoodieSyncConfig.META_SYNC_USE_FILE_LISTING_FROM_METADATA;
@@ -83,16 +82,17 @@ public abstract class HoodieSyncClient implements HoodieMetaSyncOperations, Auto
     return metaClient.getTableConfig().getBootstrapBasePath().isPresent();
   }
 
+  public HoodieTableMetaClient getMetaClient() {
+    return metaClient;
+  }
+
   /**
    * Get the set of dropped partitions since the last synced commit.
    * If last sync time is not known then consider only active timeline.
    * Going through archive timeline is a costly operation, and it should be avoided unless some start time is given.
    */
   public Set<String> getDroppedPartitionsSince(Option<String> lastCommitTimeSynced, Option<String> lastCommitCompletionTimeSynced) {
-    HoodieTimeline timeline = lastCommitTimeSynced.isPresent()
-        ? TimelineUtils.getCommitsTimelineAfter(metaClient, lastCommitTimeSynced.get(), lastCommitCompletionTimeSynced)
-        : metaClient.getActiveTimeline();
-    return new HashSet<>(TimelineUtils.getDroppedPartitions(timeline));
+    return new HashSet<>(TimelineUtils.getDroppedPartitions(metaClient, lastCommitTimeSynced, lastCommitCompletionTimeSynced));
   }
 
   @Override
@@ -122,8 +122,7 @@ public abstract class HoodieSyncClient implements HoodieMetaSyncOperations, Auto
     HoodieLocalEngineContext engineContext = new HoodieLocalEngineContext(metaClient.getHadoopConf());
     return FSUtils.getAllPartitionPaths(engineContext,
         config.getString(META_SYNC_BASE_PATH),
-        config.getBoolean(META_SYNC_USE_FILE_LISTING_FROM_METADATA),
-        config.getBoolean(META_SYNC_ASSUME_DATE_PARTITION));
+        config.getBoolean(META_SYNC_USE_FILE_LISTING_FROM_METADATA));
   }
 
   public List<String> getWrittenPartitionsSince(Option<String> lastCommitTimeSynced, Option<String> lastCommitCompletionTimeSynced) {

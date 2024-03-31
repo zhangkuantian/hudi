@@ -7,13 +7,14 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 
 package org.apache.hudi.common.fs;
@@ -21,11 +22,11 @@ package org.apache.hudi.common.fs;
 import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.config.SerializableConfiguration;
 import org.apache.hudi.common.engine.HoodieEngineContext;
-import org.apache.hudi.common.fs.inline.InLineFileSystem;
 import org.apache.hudi.common.model.HoodieFileFormat;
 import org.apache.hudi.common.model.HoodieLogFile;
 import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
+import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.collection.ImmutablePair;
@@ -34,8 +35,16 @@ import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.exception.HoodieValidationException;
 import org.apache.hudi.exception.InvalidHoodiePathException;
-import org.apache.hudi.hadoop.CachingPath;
+import org.apache.hudi.hadoop.fs.CachingPath;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
+import org.apache.hudi.hadoop.fs.HoodieWrapperFileSystem;
+import org.apache.hudi.hadoop.fs.NoOpConsistencyGuard;
+import org.apache.hudi.hadoop.fs.inline.InLineFSUtils;
+import org.apache.hudi.hadoop.fs.inline.InLineFileSystem;
 import org.apache.hudi.metadata.HoodieTableMetadata;
+import org.apache.hudi.storage.HoodieStorage;
+import org.apache.hudi.storage.StoragePath;
+import org.apache.hudi.storage.StorageSchemes;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
@@ -58,7 +67,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -69,7 +77,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static org.apache.hudi.hadoop.CachingPath.getPathWithoutSchemeAndAuthority;
+import static org.apache.hudi.hadoop.fs.CachingPath.getPathWithoutSchemeAndAuthority;
 
 /**
  * Utility functions related to accessing the file storage.
@@ -83,48 +91,16 @@ public class FSUtils {
       Pattern.compile("^\\.(.+)_(.*)\\.(log|archive)\\.(\\d+)(_((\\d+)-(\\d+)-(\\d+))(.cdc)?)?");
   public static final Pattern PREFIX_BY_FILE_ID_PATTERN = Pattern.compile("^(.+)-(\\d+)");
   private static final int MAX_ATTEMPTS_RECOVER_LEASE = 10;
-  private static final String HOODIE_ENV_PROPS_PREFIX = "HOODIE_ENV_";
+
+  private static final String LOG_FILE_EXTENSION = ".log";
 
   private static final PathFilter ALLOW_ALL_FILTER = file -> true;
-
-  public static Configuration prepareHadoopConf(Configuration conf) {
-    // look for all properties, prefixed to be picked up
-    for (Entry<String, String> prop : System.getenv().entrySet()) {
-      if (prop.getKey().startsWith(HOODIE_ENV_PROPS_PREFIX)) {
-        LOG.info("Picking up value for hoodie env var :" + prop.getKey());
-        conf.set(prop.getKey().replace(HOODIE_ENV_PROPS_PREFIX, "").replaceAll("_DOT_", "."), prop.getValue());
-      }
-    }
-    return conf;
-  }
 
   public static Configuration buildInlineConf(Configuration conf) {
     Configuration inlineConf = new Configuration(conf);
     inlineConf.set("fs." + InLineFileSystem.SCHEME + ".impl", InLineFileSystem.class.getName());
     inlineConf.setClassLoader(InLineFileSystem.class.getClassLoader());
     return inlineConf;
-  }
-
-  public static FileSystem getFs(String pathStr, Configuration conf) {
-    return getFs(new Path(pathStr), conf);
-  }
-
-  public static FileSystem getFs(Path path, Configuration conf) {
-    FileSystem fs;
-    prepareHadoopConf(conf);
-    try {
-      fs = path.getFileSystem(conf);
-    } catch (IOException e) {
-      throw new HoodieIOException("Failed to get instance of " + FileSystem.class.getName(), e);
-    }
-    return fs;
-  }
-
-  public static FileSystem getFs(String pathStr, Configuration conf, boolean localByDefault) {
-    if (localByDefault) {
-      return getFs(addSchemeIfLocalPath(pathStr), conf);
-    }
-    return getFs(pathStr, conf);
   }
 
   /**
@@ -137,18 +113,6 @@ public class FSUtils {
     return fs.exists(new Path(path + "/" + HoodieTableMetaClient.METAFOLDER_NAME));
   }
 
-  public static Path addSchemeIfLocalPath(String path) {
-    Path providedPath = new Path(path);
-    File localFile = new File(path);
-    if (!providedPath.isAbsolute() && localFile.exists()) {
-      Path resolvedPath = new Path("file://" + localFile.getAbsolutePath());
-      LOG.info("Resolving file " + path + " to be a local file.");
-      return resolvedPath;
-    }
-    LOG.info("Resolving file " + path + "to be a remote file.");
-    return providedPath;
-  }
-
   /**
    * Makes path qualified w/ {@link FileSystem}'s URI
    *
@@ -158,6 +122,17 @@ public class FSUtils {
    */
   public static Path makeQualified(FileSystem fs, Path path) {
     return path.makeQualified(fs.getUri(), fs.getWorkingDirectory());
+  }
+
+  /**
+   * Makes location qualified with {@link HoodieStorage}'s URI.
+   *
+   * @param storage  instance of {@link HoodieStorage}.
+   * @param location to be qualified.
+   * @return qualified location, prefixed with the URI of the target HoodieStorage object provided.
+   */
+  public static StoragePath makeQualified(HoodieStorage storage, StoragePath location) {
+    return location.makeQualified(storage.getUri());
   }
 
   /**
@@ -187,7 +162,7 @@ public class FSUtils {
   }
 
   public static String getCommitFromCommitFile(String commitFileName) {
-    return commitFileName.split("\\.")[0];
+    return HoodieInstant.extractTimestamp(commitFileName);
   }
 
   public static String getCommitTime(String fullFileName) {
@@ -211,6 +186,7 @@ public class FSUtils {
 
   /**
    * Gets all partition paths assuming date partitioning (year, month, day) three levels down.
+   * TODO: (Lin) Delete this function after we remove the assume.date.partitioning config completely.
    */
   public static List<String> getAllPartitionFoldersThreeLevelsDown(FileSystem fs, String basePath) throws IOException {
     List<String> datePartitions = new ArrayList<>();
@@ -280,11 +256,9 @@ public class FSUtils {
   }
 
   public static List<String> getAllPartitionPaths(HoodieEngineContext engineContext, String basePathStr,
-                                                  boolean useFileListingFromMetadata,
-                                                  boolean assumeDatePartitioning) {
+                                                  boolean useFileListingFromMetadata) {
     HoodieMetadataConfig metadataConfig = HoodieMetadataConfig.newBuilder()
         .enable(useFileListingFromMetadata)
-        .withAssumeDatePartitioning(assumeDatePartitioning)
         .build();
     try (HoodieTableMetadata tableMetadata = HoodieTableMetadata.create(engineContext, metadataConfig, basePathStr)) {
       return tableMetadata.getAllPartitionPaths();
@@ -381,10 +355,9 @@ public class FSUtils {
   }
 
   /**
-   * Get the first part of the file name in the log file. That will be the fileId. Log file do not have instantTime in
-   * the file name.
+   * Get the second part of the file name in the log file. That will be the delta commit time.
    */
-  public static String getBaseCommitTimeFromLogPath(Path path) {
+  public static String getDeltaCommitTimeFromLogPath(Path path) {
     Matcher matcher = LOG_FILE_PATTERN.matcher(path.getName());
     if (!matcher.find()) {
       throw new InvalidHoodiePathException(path, "LogFile");
@@ -454,11 +427,11 @@ public class FSUtils {
     return Integer.parseInt(matcher.group(4));
   }
 
-  public static String makeLogFileName(String fileId, String logFileExtension, String baseCommitTime, int version,
+  public static String makeLogFileName(String fileId, String logFileExtension, String deltaCommitTime, int version,
       String writeToken) {
     String suffix = (writeToken == null)
-        ? String.format("%s_%s%s.%d", fileId, baseCommitTime, logFileExtension, version)
-        : String.format("%s_%s%s.%d_%s", fileId, baseCommitTime, logFileExtension, version, writeToken);
+        ? String.format("%s_%s%s.%d", fileId, deltaCommitTime, logFileExtension, version)
+        : String.format("%s_%s%s.%d_%s", fileId, deltaCommitTime, logFileExtension, version, writeToken);
     return HoodieLogFile.LOG_FILE_PREFIX + suffix;
   }
 
@@ -468,12 +441,17 @@ public class FSUtils {
   }
 
   public static boolean isLogFile(Path logPath) {
-    return isLogFile(logPath.getName());
+    String scheme = logPath.toUri().getScheme();
+    return isLogFile(InLineFileSystem.SCHEME.equals(scheme)
+        ? InLineFSUtils.getOuterFilePathFromInlinePath(logPath).getName() : logPath.getName());
   }
 
   public static boolean isLogFile(String fileName) {
-    Matcher matcher = LOG_FILE_PATTERN.matcher(fileName);
-    return fileName.contains(".log") && matcher.find();
+    if (fileName.contains(LOG_FILE_EXTENSION)) {
+      Matcher matcher = LOG_FILE_PATTERN.matcher(fileName);
+      return matcher.find();
+    }
+    return false;
   }
 
   /**
@@ -510,20 +488,20 @@ public class FSUtils {
    * Get the latest log file for the passed in file-id in the partition path
    */
   public static Option<HoodieLogFile> getLatestLogFile(FileSystem fs, Path partitionPath, String fileId,
-                                                       String logFileExtension, String baseCommitTime) throws IOException {
-    return getLatestLogFile(getAllLogFiles(fs, partitionPath, fileId, logFileExtension, baseCommitTime));
+                                                       String logFileExtension, String deltaCommitTime) throws IOException {
+    return getLatestLogFile(getAllLogFiles(fs, partitionPath, fileId, logFileExtension, deltaCommitTime));
   }
 
   /**
    * Get all the log files for the passed in file-id in the partition path.
    */
   public static Stream<HoodieLogFile> getAllLogFiles(FileSystem fs, Path partitionPath, final String fileId,
-      final String logFileExtension, final String baseCommitTime) throws IOException {
+      final String logFileExtension, final String deltaCommitTime) throws IOException {
     try {
       PathFilter pathFilter = path -> path.getName().startsWith("." + fileId) && path.getName().contains(logFileExtension);
       return Arrays.stream(fs.listStatus(partitionPath, pathFilter))
           .map(HoodieLogFile::new)
-          .filter(s -> s.getBaseCommitTime().equals(baseCommitTime));
+          .filter(s -> s.getDeltaCommitTime().equals(deltaCommitTime));
     } catch (FileNotFoundException e) {
       return Stream.of();
     }
@@ -533,26 +511,14 @@ public class FSUtils {
    * Get the latest log version for the fileId in the partition path.
    */
   public static Option<Pair<Integer, String>> getLatestLogVersion(FileSystem fs, Path partitionPath,
-      final String fileId, final String logFileExtension, final String baseCommitTime) throws IOException {
+      final String fileId, final String logFileExtension, final String deltaCommitTime) throws IOException {
     Option<HoodieLogFile> latestLogFile =
-        getLatestLogFile(getAllLogFiles(fs, partitionPath, fileId, logFileExtension, baseCommitTime));
+        getLatestLogFile(getAllLogFiles(fs, partitionPath, fileId, logFileExtension, deltaCommitTime));
     if (latestLogFile.isPresent()) {
       return Option
           .of(Pair.of(latestLogFile.get().getLogVersion(), latestLogFile.get().getLogWriteToken()));
     }
     return Option.empty();
-  }
-
-  /**
-   * computes the next log version for the specified fileId in the partition path.
-   */
-  public static int computeNextLogVersion(FileSystem fs, Path partitionPath, final String fileId,
-      final String logFileExtension, final String baseCommitTime) throws IOException {
-    Option<Pair<Integer, String>> currentVersionWithWriteToken =
-        getLatestLogVersion(fs, partitionPath, fileId, logFileExtension, baseCommitTime);
-    // handle potential overflow
-    return (currentVersionWithWriteToken.isPresent()) ? currentVersionWithWriteToken.get().getKey() + 1
-        : HoodieLogFile.LOGFILE_BASE_VERSION;
   }
 
   public static int getDefaultBufferSize(final FileSystem fs) {
@@ -659,7 +625,7 @@ public class FSUtils {
 
   public static Configuration registerFileSystem(Path file, Configuration conf) {
     Configuration returnConf = new Configuration(conf);
-    String scheme = FSUtils.getFs(file.toString(), conf).getScheme();
+    String scheme = HadoopFSUtils.getFs(file.toString(), conf).getScheme();
     returnConf.set("fs." + HoodieWrapperFileSystem.getHoodieScheme(scheme) + ".impl",
         HoodieWrapperFileSystem.class.getName());
     return returnConf;
@@ -674,7 +640,7 @@ public class FSUtils {
    */
   public static HoodieWrapperFileSystem getFs(String path, SerializableConfiguration hadoopConf,
       ConsistencyGuardConfig consistencyGuardConfig) {
-    FileSystem fileSystem = FSUtils.getFs(path, hadoopConf.newCopy());
+    FileSystem fileSystem = HadoopFSUtils.getFs(path, hadoopConf.newCopy());
     return new HoodieWrapperFileSystem(fileSystem,
         consistencyGuardConfig.isConsistencyCheckEnabled()
             ? new FailSafeConsistencyGuard(fileSystem, consistencyGuardConfig)
@@ -712,7 +678,7 @@ public class FSUtils {
             pairOfSubPathAndConf -> deleteSubPath(
                 pairOfSubPathAndConf.getKey(), pairOfSubPathAndConf.getValue(), true)
         );
-        boolean result = fs.delete(dirPath, false);
+        boolean result = fs.delete(dirPath, true);
         LOG.info("Removed directory at " + dirPath);
         return result;
       }
@@ -835,6 +801,49 @@ public class FSUtils {
       }
     }
     return result;
+  }
+
+  public static List<FileStatus> getAllDataFileStatus(FileSystem fs, Path path) throws IOException {
+    List<FileStatus> statuses = new ArrayList<>();
+    for (FileStatus status : fs.listStatus(path)) {
+      if (!status.getPath().toString().contains(HoodieTableMetaClient.METAFOLDER_NAME)) {
+        if (status.isDirectory()) {
+          statuses.addAll(getAllDataFileStatus(fs, status.getPath()));
+        } else {
+          statuses.add(status);
+        }
+      }
+    }
+    return statuses;
+  }
+
+  public static Map<String, Boolean> deleteFilesParallelize(
+      HoodieTableMetaClient metaClient,
+      List<String> paths,
+      HoodieEngineContext context,
+      int parallelism,
+      boolean ignoreFailed) {
+    return FSUtils.parallelizeFilesProcess(context,
+        metaClient.getFs(),
+        parallelism,
+        pairOfSubPathAndConf -> {
+          Path file = new Path(pairOfSubPathAndConf.getKey());
+          try {
+            FileSystem fs = metaClient.getFs();
+            if (fs.exists(file)) {
+              return fs.delete(file, false);
+            }
+            return true;
+          } catch (IOException e) {
+            if (!ignoreFailed) {
+              throw new HoodieIOException("Failed to delete : " + file, e);
+            } else {
+              LOG.warn("Ignore failed deleting : " + file);
+              return true;
+            }
+          }
+        },
+        paths);
   }
 
   /**

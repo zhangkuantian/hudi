@@ -73,12 +73,16 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
  * Utilities to generate all kinds of sub-pipelines.
  */
 public class Pipelines {
+
+  // The counter of operators, avoiding duplicate uids caused by the same operator
+  private static final ConcurrentHashMap<String,Integer> OPERATOR_COUNTERS = new ConcurrentHashMap<>();
 
   /**
    * Bulk insert the input dataset at once.
@@ -120,10 +124,11 @@ public class Pipelines {
       RowDataKeyGen keyGen = RowDataKeyGen.instance(conf, rowType);
       RowType rowTypeWithFileId = BucketBulkInsertWriterHelper.rowTypeWithFileId(rowType);
       InternalTypeInfo<RowData> typeInfo = InternalTypeInfo.of(rowTypeWithFileId);
+      boolean needFixedFileIdSuffix = OptionsResolver.isNonBlockingConcurrencyControl(conf);
 
       Map<String, String> bucketIdToFileId = new HashMap<>();
       dataStream = dataStream.partitionCustom(partitioner, keyGen::getHoodieKey)
-          .map(record -> BucketBulkInsertWriterHelper.rowWithFileId(bucketIdToFileId, keyGen, record, indexKeys, numBuckets), typeInfo)
+          .map(record -> BucketBulkInsertWriterHelper.rowWithFileId(bucketIdToFileId, keyGen, record, indexKeys, numBuckets, needFixedFileIdSuffix), typeInfo)
           .setParallelism(conf.getInteger(FlinkOptions.WRITE_TASKS)); // same parallelism as write task to avoid shuffle
       if (conf.getBoolean(FlinkOptions.WRITE_BULK_INSERT_SORT_INPUT)) {
         SortOperatorGen sortOperatorGen = BucketBulkInsertWriterHelper.getFileIdSorterGen(rowTypeWithFileId);
@@ -405,10 +410,11 @@ public class Pipelines {
    * @return the compaction pipeline
    */
   public static DataStreamSink<CompactionCommitEvent> compact(Configuration conf, DataStream<Object> dataStream) {
-    return dataStream.transform("compact_plan_generate",
+    DataStreamSink<CompactionCommitEvent> compactionCommitEventDataStream = dataStream.transform("compact_plan_generate",
             TypeInformation.of(CompactionPlanEvent.class),
             new CompactionPlanOperator(conf))
         .setParallelism(1) // plan generate must be singleton
+        .setMaxParallelism(1)
         // make the distribution strategy deterministic to avoid concurrent modifications
         // on the same bucket files
         .keyBy(plan -> plan.getOperation().getFileGroupId().getFileId())
@@ -419,6 +425,8 @@ public class Pipelines {
         .addSink(new CompactionCommitSink(conf))
         .name("compact_commit")
         .setParallelism(1); // compaction commit should be singleton
+    compactionCommitEventDataStream.getTransformation().setMaxParallelism(1);
+    return compactionCommitEventDataStream;
   }
 
   /**
@@ -447,6 +455,7 @@ public class Pipelines {
             TypeInformation.of(ClusteringPlanEvent.class),
             new ClusteringPlanOperator(conf))
         .setParallelism(1) // plan generate must be singleton
+        .setMaxParallelism(1) // plan generate must be singleton
         .keyBy(plan ->
             // make the distribution strategy deterministic to avoid concurrent modifications
             // on the same bucket files
@@ -460,15 +469,19 @@ public class Pipelines {
       ExecNodeUtil.setManagedMemoryWeight(clusteringStream.getTransformation(),
           conf.getInteger(FlinkOptions.WRITE_SORT_MEMORY) * 1024L * 1024L);
     }
-    return clusteringStream.addSink(new ClusteringCommitSink(conf))
+    DataStreamSink<ClusteringCommitEvent> clusteringCommitEventDataStream = clusteringStream.addSink(new ClusteringCommitSink(conf))
         .name("clustering_commit")
         .setParallelism(1); // clustering commit should be singleton
+    clusteringCommitEventDataStream.getTransformation().setMaxParallelism(1);
+    return clusteringCommitEventDataStream;
   }
 
   public static DataStreamSink<Object> clean(Configuration conf, DataStream<Object> dataStream) {
-    return dataStream.addSink(new CleanFunction<>(conf))
+    DataStreamSink<Object> cleanCommitDataStream = dataStream.addSink(new CleanFunction<>(conf))
         .setParallelism(1)
         .name("clean_commits");
+    cleanCommitDataStream.getTransformation().setMaxParallelism(1);
+    return cleanCommitDataStream;
   }
 
   public static DataStreamSink<Object> dummySink(DataStream<Object> dataStream) {
@@ -482,7 +495,8 @@ public class Pipelines {
   }
 
   public static String opUID(String operatorN, Configuration conf) {
-    return "uid_" + operatorN + "_" + getTablePath(conf);
+    Integer operatorCount = OPERATOR_COUNTERS.merge(operatorN, 1, (oldValue, value) -> oldValue + value);
+    return "uid_" + operatorN + (operatorCount == 1 ? "" : "_" + (operatorCount - 1)) + "_" + getTablePath(conf);
   }
 
   public static String getTablePath(Configuration conf) {

@@ -26,7 +26,6 @@ import org.apache.hudi.cli.TableHeader;
 import org.apache.hudi.cli.commands.SparkMain.SparkCommand;
 import org.apache.hudi.cli.utils.InputStreamConsumer;
 import org.apache.hudi.cli.utils.SparkUtil;
-import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieLogFile;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieRecord.HoodieRecordType;
@@ -35,8 +34,10 @@ import org.apache.hudi.common.table.log.HoodieLogFormat;
 import org.apache.hudi.common.table.log.HoodieLogFormat.Reader;
 import org.apache.hudi.common.table.log.block.HoodieAvroDataBlock;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
-import org.apache.hudi.common.util.collection.ClosableIterator;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.collection.ClosableIterator;
+import org.apache.hudi.exception.HoodieException;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.IndexedRecord;
@@ -94,10 +95,10 @@ public class ArchivedCommitsCommand {
     return "Archival successfully triggered";
   }
 
-  @ShellMethod(key = "show archived commit stats", value = "Read commits from archived files and show details")
+  @ShellMethod(key = "show archived commit stats", value = "Read commits from archived files and show file group details")
   public String showArchivedCommits(
       @ShellOption(value = {"--archiveFolderPattern"}, help = "Archive Folder", defaultValue = "") String folder,
-      @ShellOption(value = {"--limit"}, help = "Limit commits", defaultValue = "-1") final Integer limit,
+      @ShellOption(value = {"--limit"}, help = "Limit commits", defaultValue = "10") final Integer limit,
       @ShellOption(value = {"--sortBy"}, help = "Sorting Field", defaultValue = "") final String sortByField,
       @ShellOption(value = {"--desc"}, help = "Ordering", defaultValue = "false") final boolean descending,
       @ShellOption(value = {"--headeronly"}, help = "Print Header Only",
@@ -109,11 +110,11 @@ public class ArchivedCommitsCommand {
     if (folder != null && !folder.isEmpty()) {
       archivePath = new Path(basePath + "/.hoodie/" + folder);
     }
-    FileStatus[] fsStatuses = FSUtils.getFs(basePath, HoodieCLI.conf).globStatus(archivePath);
+    FileStatus[] fsStatuses = HadoopFSUtils.getFs(basePath, HoodieCLI.conf).globStatus(archivePath);
     List<Comparable[]> allStats = new ArrayList<>();
     for (FileStatus fs : fsStatuses) {
       // read the archived file
-      Reader reader = HoodieLogFormat.newReader(FSUtils.getFs(basePath, HoodieCLI.conf),
+      Reader reader = HoodieLogFormat.newReader(HadoopFSUtils.getFs(basePath, HoodieCLI.conf),
           new HoodieLogFile(fs.getPath()), HoodieArchivedMetaEntry.getClassSchema());
 
       List<IndexedRecord> readRecords = new ArrayList<>();
@@ -183,11 +184,11 @@ public class ArchivedCommitsCommand {
     String basePath = metaClient.getBasePath();
     Path archivePath = new Path(metaClient.getArchivePath() + "/.commits_.archive*");
     FileStatus[] fsStatuses =
-        FSUtils.getFs(basePath, HoodieCLI.conf).globStatus(archivePath);
+        HadoopFSUtils.getFs(basePath, HoodieCLI.conf).globStatus(archivePath);
     List<Comparable[]> allCommits = new ArrayList<>();
     for (FileStatus fs : fsStatuses) {
       // read the archived file
-      HoodieLogFormat.Reader reader = HoodieLogFormat.newReader(FSUtils.getFs(basePath, HoodieCLI.conf),
+      HoodieLogFormat.Reader reader = HoodieLogFormat.newReader(HadoopFSUtils.getFs(basePath, HoodieCLI.conf),
           new HoodieLogFile(fs.getPath()), HoodieArchivedMetaEntry.getClassSchema());
 
       List<IndexedRecord> readRecords = new ArrayList<>();
@@ -213,8 +214,7 @@ public class ArchivedCommitsCommand {
     return HoodiePrintHelper.print(header, new HashMap<>(), sortByField, descending, limit, headerOnly, allCommits);
   }
 
-  private Comparable[] commitDetail(GenericRecord record, String metadataName,
-                                    boolean skipMetadata) {
+  private Comparable[] commitDetail(GenericRecord record, String metadataName, boolean skipMetadata) {
     List<Object> commitDetails = new ArrayList<>();
     commitDetails.add(record.get("commitTime"));
     commitDetails.add(record.get("actionType").toString());
@@ -225,26 +225,24 @@ public class ArchivedCommitsCommand {
   }
 
   private Comparable[] readCommit(GenericRecord record, boolean skipMetadata) {
-    try {
-      switch (record.get("actionType").toString()) {
-        case HoodieTimeline.CLEAN_ACTION:
-          return commitDetail(record, "hoodieCleanMetadata", skipMetadata);
-        case HoodieTimeline.COMMIT_ACTION:
-        case HoodieTimeline.DELTA_COMMIT_ACTION:
-          return commitDetail(record, "hoodieCommitMetadata", skipMetadata);
-        case HoodieTimeline.ROLLBACK_ACTION:
-          return commitDetail(record, "hoodieRollbackMetadata", skipMetadata);
-        case HoodieTimeline.SAVEPOINT_ACTION:
-          return commitDetail(record, "hoodieSavePointMetadata", skipMetadata);
-        case HoodieTimeline.COMPACTION_ACTION:
-          return commitDetail(record, "hoodieCompactionMetadata", skipMetadata);
-        default: {
-          return new Comparable[] {};
-        }
+    String actionType = record.get("actionType").toString();
+    switch (actionType) {
+      case HoodieTimeline.CLEAN_ACTION:
+        return commitDetail(record, "hoodieCleanMetadata", skipMetadata);
+      case HoodieTimeline.COMMIT_ACTION:
+      case HoodieTimeline.DELTA_COMMIT_ACTION:
+        return commitDetail(record, "hoodieCommitMetadata", skipMetadata);
+      case HoodieTimeline.ROLLBACK_ACTION:
+        return commitDetail(record, "hoodieRollbackMetadata", skipMetadata);
+      case HoodieTimeline.SAVEPOINT_ACTION:
+        return commitDetail(record, "hoodieSavePointMetadata", skipMetadata);
+      case HoodieTimeline.COMPACTION_ACTION:
+        return commitDetail(record, "hoodieCompactionMetadata", skipMetadata);
+      case HoodieTimeline.REPLACE_COMMIT_ACTION:
+        return commitDetail(record, "hoodieReplaceCommitMetadata", skipMetadata);
+      default: {
+        throw new HoodieException("Unexpected action type: " + actionType);
       }
-    } catch (Exception e) {
-      e.printStackTrace();
-      return new Comparable[] {};
     }
   }
 

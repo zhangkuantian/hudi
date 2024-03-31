@@ -22,8 +22,9 @@ import org.apache.hudi.common.bloom.BloomFilter;
 import org.apache.hudi.common.model.HoodieFileFormat;
 import org.apache.hudi.common.util.AvroOrcUtils;
 import org.apache.hudi.common.util.BaseFileUtils;
-import org.apache.hudi.common.util.collection.ClosableIterator;
 import org.apache.hudi.common.util.OrcReaderIterator;
+import org.apache.hudi.common.util.collection.ClosableIterator;
+import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.exception.HoodieIOException;
 
 import org.apache.avro.Schema;
@@ -67,12 +68,12 @@ public class HoodieAvroOrcReader extends HoodieAvroFileReaderBase {
   }
 
   @Override
-  public Set<String> filterRowKeys(Set candidateRowKeys) {
+  public Set<Pair<String, Long>> filterRowKeys(Set candidateRowKeys) {
     return orcUtils.filterRowKeys(conf, path, candidateRowKeys);
   }
 
   @Override
-  protected ClosableIterator<IndexedRecord> getIndexedRecordIterator(Schema readerSchema, Schema requestedSchema) {
+  public ClosableIterator<IndexedRecord> getIndexedRecordIterator(Schema readerSchema, Schema requestedSchema) {
     if (!Objects.equals(readerSchema, requestedSchema)) {
       throw new UnsupportedOperationException("Schema projections are not supported in HFile reader");
     }

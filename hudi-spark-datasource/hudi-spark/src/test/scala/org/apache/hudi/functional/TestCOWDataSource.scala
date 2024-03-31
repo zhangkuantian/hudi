@@ -18,31 +18,35 @@
 package org.apache.hudi.functional
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.{FileSystem, Path}
-import org.apache.hudi.DataSourceWriteOptions.KEYGENERATOR_CLASS_NAME
+import org.apache.hadoop.fs.{FileSystem, Path, PathFilter}
+import org.apache.hudi.DataSourceWriteOptions.{INLINE_CLUSTERING_ENABLE, KEYGENERATOR_CLASS_NAME}
 import org.apache.hudi.HoodieConversionUtils.toJavaOption
 import org.apache.hudi.QuickstartUtils.{convertToStringList, getQuickstartWriteConfigs}
+import org.apache.hudi.avro.AvroSchemaCompatibility.SchemaIncompatibilityType
+import org.apache.hudi.client.SparkRDDWriteClient
 import org.apache.hudi.client.common.HoodieSparkEngineContext
-import org.apache.hudi.common.config.{HoodieCommonConfig, HoodieMetadataConfig}
 import org.apache.hudi.common.config.TimestampKeyGeneratorConfig.{TIMESTAMP_INPUT_DATE_FORMAT, TIMESTAMP_OUTPUT_DATE_FORMAT, TIMESTAMP_TIMEZONE_FORMAT, TIMESTAMP_TYPE_FIELD}
+import org.apache.hudi.common.config.{HoodieCommonConfig, HoodieMetadataConfig}
 import org.apache.hudi.common.fs.FSUtils
-import org.apache.hudi.common.model.HoodieRecord
 import org.apache.hudi.common.model.HoodieRecord.HoodieRecordType
-import org.apache.hudi.common.table.timeline.HoodieInstant
+import org.apache.hudi.common.model.{HoodieRecord, WriteOperationType}
+import org.apache.hudi.common.table.timeline.{HoodieInstant, HoodieTimeline, TimelineUtils}
 import org.apache.hudi.common.table.{HoodieTableMetaClient, TableSchemaResolver}
 import org.apache.hudi.common.testutils.HoodieTestDataGenerator
 import org.apache.hudi.common.testutils.RawTripTestPayload.{deleteRecordsToStrings, recordsToStrings}
-import org.apache.hudi.common.util
+import org.apache.hudi.common.util.{ClusteringUtils, Option}
+import org.apache.hudi.common.{HoodiePendingRollbackInfo, util}
 import org.apache.hudi.config.HoodieWriteConfig
 import org.apache.hudi.config.metrics.HoodieMetricsConfig
 import org.apache.hudi.exception.ExceptionUtil.getRootCause
-import org.apache.hudi.exception.HoodieException
+import org.apache.hudi.exception.{HoodieException, SchemaBackwardsCompatibilityException}
 import org.apache.hudi.functional.CommonOptionUtils._
 import org.apache.hudi.functional.TestCOWDataSource.convertColumnsToNullable
 import org.apache.hudi.hive.HiveSyncConfigHolder
 import org.apache.hudi.keygen._
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions
-import org.apache.hudi.metrics.Metrics
+import org.apache.hudi.metrics.{Metrics, MetricsReporterType}
+import org.apache.hudi.table.HoodieSparkTable
 import org.apache.hudi.testutils.HoodieSparkClientTestBase
 import org.apache.hudi.util.JFunction
 import org.apache.hudi.{AvroConversionUtils, DataSourceReadOptions, DataSourceWriteOptions, HoodieDataSourceHelpers, QuickstartUtils, ScalaAssertionSupport}
@@ -54,11 +58,12 @@ import org.joda.time.DateTime
 import org.joda.time.format.DateTimeFormat
 import org.junit.jupiter.api.Assertions._
 import org.junit.jupiter.api.function.Executable
-import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
+import org.junit.jupiter.api.{AfterEach, BeforeEach, Disabled, Test}
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.{CsvSource, EnumSource, ValueSource}
 
 import java.sql.{Date, Timestamp}
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 import java.util.function.Consumer
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
@@ -96,10 +101,9 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
     System.gc()
   }
 
-  @ParameterizedTest
-  @EnumSource(value = classOf[HoodieRecordType], names = Array("AVRO", "SPARK"))
-  def testShortNameStorage(recordType: HoodieRecordType) {
-    val (writeOpts, readOpts) = getWriterReaderOpts(recordType)
+  @Test
+  def testShortNameStorage(): Unit = {
+    val (writeOpts, readOpts) = getWriterReaderOpts()
 
     // Insert Operation
     val records = recordsToStrings(dataGen.generateInserts("000", 100)).toList
@@ -261,6 +265,7 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
     // this write should succeed even w/o setting any param for record key, partition path since table config will be re-used.
     writeToHudi(optsWithNoRepeatedTableConfig, inputDF)
     spark.read.format("org.apache.hudi").options(readOpts).load(basePath).count()
+    assertLastCommitIsUpsert()
   }
 
   @Test
@@ -298,6 +303,7 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
     // this write should succeed even w/o though we don't set key gen explicitly.
     writeToHudi(optsWithNoRepeatedTableConfig, inputDF)
     spark.read.format("org.apache.hudi").options(readOpts).load(basePath).count()
+    assertLastCommitIsUpsert()
   }
 
   @Test
@@ -334,6 +340,7 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
     // this write should succeed even w/o though we set key gen explicitly, its the default
     writeToHudi(optsWithNoRepeatedTableConfig, inputDF)
     spark.read.format("org.apache.hudi").options(readOpts).load(basePath).count()
+    assertLastCommitIsUpsert()
   }
 
   private def writeToHudi(opts: Map[String, String], df: Dataset[Row]): Unit = {
@@ -354,7 +361,7 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
       "hoodie.upsert.shuffle.parallelism" -> "4",
       "hoodie.bulkinsert.shuffle.parallelism" -> "2",
       "hoodie.delete.shuffle.parallelism" -> "1",
-      "hoodie.datasource.write.precombine.field" -> "ts",
+      "hoodie.datasource.write.precombine.field" -> "timestamp",
       HoodieMetadataConfig.ENABLE.key -> "false" // this is testing table configs and write configs. disabling metadata to save on test run time.
     ))
 
@@ -405,6 +412,105 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
         .mode(SaveMode.Overwrite)
         .save(basePath)
     }
+  }
+
+  @Test
+  def testInsertOverWriteTableWithInsertDropDupes(): Unit = {
+
+    val (writeOpts, readOpts) = getWriterReaderOpts(HoodieRecordType.AVRO)
+
+    // Insert Operation
+    val records1 = recordsToStrings(dataGen.generateInserts("000", 10)).toList
+    val inputDF1 = spark.read.json(spark.sparkContext.parallelize(records1, 2))
+    inputDF1.withColumn("batchId", lit("batch1")).write.format("org.apache.hudi")
+      .options(writeOpts)
+      .mode(SaveMode.Overwrite)
+      .save(basePath)
+
+    assertTrue(HoodieDataSourceHelpers.hasNewCommits(fs, basePath, "000"))
+
+    val snapshotDF1 = spark.read.format("org.apache.hudi")
+      .options(readOpts)
+      .load(basePath)
+    assertEquals(10, snapshotDF1.count())
+
+    val records3 = recordsToStrings(dataGen.generateUniqueUpdates("101", 4)).toList
+    val records2 = recordsToStrings(dataGen.generateInserts("101", 4)).toList
+    val inputDF2 = spark.read.json(spark.sparkContext.parallelize(records2, 1))
+    val inputDF3 = spark.read.json(spark.sparkContext.parallelize(records3, 1))
+    val inputDF4 = inputDF2.withColumn("batchId", lit("batch2"))
+      .union(inputDF3.withColumn("batchId", lit("batch3")))
+
+    inputDF4.write.format("org.apache.hudi")
+      .options(writeOpts)
+      .option(DataSourceWriteOptions.OPERATION.key, DataSourceWriteOptions.INSERT_OVERWRITE_TABLE_OPERATION_OPT_VAL)
+      .option(DataSourceWriteOptions.INSERT_DROP_DUPS.key(), "true")
+      .mode(SaveMode.Append)
+      .save(basePath)
+
+    val snapshotDF2 = spark.read.format("org.apache.hudi")
+      .options(readOpts)
+      .load(basePath)
+    assertEquals(snapshotDF2.count(), 8)
+  }
+
+  @Test
+  def testInsertOverWritePartitionWithInsertDropDupes(): Unit = {
+    val (writeOpts, readOpts) = getWriterReaderOpts(HoodieRecordType.AVRO)
+    // Insert Operation
+    val records1 = recordsToStrings(dataGen.generateInserts("000", 100)).toList
+    val inputDF1 = spark.read.json(spark.sparkContext.parallelize(records1, 2))
+    inputDF1.withColumn("batchId", lit("batch1")).write.format("org.apache.hudi")
+      .options(writeOpts)
+      .mode(SaveMode.Overwrite)
+      .save(basePath)
+    val validRecordsFromBatch1 = inputDF1.where("partition!='2016/03/15'").count()
+
+    assertTrue(HoodieDataSourceHelpers.hasNewCommits(fs, basePath, "000"))
+
+    val snapshotDF1 = spark.read.format("org.apache.hudi")
+      .options(readOpts)
+      .load(basePath)
+    assertEquals(100, snapshotDF1.count())
+
+    val records3 = recordsToStrings(dataGen.generateUniqueUpdates("100", 50)).toList
+    val inputDF3 = spark.read.json(spark.sparkContext.parallelize(records3, 1))
+    val inputDF4 = inputDF3.withColumn("batchId", lit("batch2")).where("partition='2016/03/15'")
+    inputDF4.cache()
+    val validRecordsFromBatch2 = inputDF4.count()
+
+    inputDF4.write.format("org.apache.hudi")
+      .options(writeOpts)
+      .option(DataSourceWriteOptions.OPERATION.key, DataSourceWriteOptions.INSERT_OVERWRITE_OPERATION_OPT_VAL)
+      .option(DataSourceWriteOptions.INSERT_DROP_DUPS.key(), "true")
+      .mode(SaveMode.Append)
+      .save(basePath)
+
+    val snapshotDF2 = spark.read.format("org.apache.hudi")
+      .options(readOpts)
+      .load(basePath)
+    assertEquals(snapshotDF2.count(), (validRecordsFromBatch1 + validRecordsFromBatch2))
+  }
+
+  @Test
+  def bulkInsertCompositeKeys(): Unit = {
+    val (writeOpts, readOpts) = getWriterReaderOpts(HoodieRecordType.AVRO)
+
+    // Insert Operation
+    val records = recordsToStrings(dataGen.generateInserts("000", 100)).toList
+    val inputDF = spark.read.json(spark.sparkContext.parallelize(records, 2))
+
+    val inputDf1 = inputDF.withColumn("new_col",lit("value1"))
+    val inputDf2 = inputDF.withColumn("new_col", lit(null).cast("String") )
+
+    inputDf1.union(inputDf2).write.format("hudi")
+        .options(writeOpts)
+        .option(DataSourceWriteOptions.RECORDKEY_FIELD.key, "_row_key,new_col")
+        .option(DataSourceWriteOptions.OPERATION.key(),"bulk_insert")
+        .mode(SaveMode.Overwrite)
+        .save(basePath)
+
+    assertEquals(200, spark.read.format("org.apache.hudi").options(readOpts).load(basePath).count())
   }
 
   /**
@@ -483,10 +589,9 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
    * archival should kick in and 2 commits should be archived. If schema is valid, no exception will be thrown. If not,
    * NPE will be thrown.
    */
-  @ParameterizedTest
-  @EnumSource(value = classOf[HoodieRecordType], names = Array("AVRO", "SPARK"))
-  def testArchivalWithBulkInsert(recordType: HoodieRecordType): Unit = {
-    val (writeOpts, readOpts) = getWriterReaderOpts(recordType)
+  @Test
+  def testArchivalWithBulkInsert(): Unit = {
+    val (writeOpts, readOpts) = getWriterReaderOpts()
 
     var structType: StructType = null
     for (i <- 1 to 7) {
@@ -552,11 +657,72 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
     assertEquals(snapshotDF2.count(), 80)
   }
 
+  /**
+   * Test retries on conflict failures.
+   */
   @ParameterizedTest
-  @EnumSource(value = classOf[HoodieRecordType], names = Array("AVRO", "SPARK"))
-  def testOverWriteModeUseReplaceAction(recordType: HoodieRecordType): Unit = {
-    val (writeOpts, readOpts) = getWriterReaderOpts(recordType)
+  @ValueSource(ints = Array(0, 2))
+  def testCopyOnWriteConcurrentUpdates(numRetries: Integer): Unit = {
+    initTestDataGenerator()
+    val records1 = recordsToStrings(dataGen.generateInserts("000", 1000)).toList
+    val inputDF1 = spark.read.json(spark.sparkContext.parallelize(records1, 2))
+    inputDF1.write.format("org.apache.hudi")
+      .options(commonOpts)
+      .option("hoodie.write.concurrency.mode", "optimistic_concurrency_control")
+      .option("hoodie.cleaner.policy.failed.writes", "LAZY")
+      .option("hoodie.write.lock.provider", "org.apache.hudi.client.transaction.lock.InProcessLockProvider")
+      .mode(SaveMode.Overwrite)
+      .save(basePath)
 
+    val snapshotDF1 = spark.read.format("org.apache.hudi")
+      .load(basePath + "/*/*/*/*")
+    assertEquals(1000, snapshotDF1.count())
+
+    val countDownLatch = new CountDownLatch(2)
+    for (x <- 1 to 2) {
+      val thread = new Thread(new UpdateThread(dataGen, spark, commonOpts, basePath, x + "00", countDownLatch, numRetries))
+      thread.setName(x + "00_THREAD")
+      thread.start()
+    }
+    countDownLatch.await(1, TimeUnit.MINUTES)
+
+    val snapshotDF2 = spark.read.format("org.apache.hudi")
+      .load(basePath + "/*/*/*/*")
+    if (numRetries > 0) {
+      assertEquals(snapshotDF2.count(), 3000)
+      assertEquals(HoodieDataSourceHelpers.listCommitsSince(fs, basePath, "000").size(), 3)
+    } else {
+      // only one among two threads will succeed and hence 2000
+      assertEquals(snapshotDF2.count(), 2000)
+      assertEquals(HoodieDataSourceHelpers.listCommitsSince(fs, basePath, "000").size(), 2)
+    }
+  }
+
+  class UpdateThread(dataGen: HoodieTestDataGenerator, spark: SparkSession, commonOpts: Map[String, String], basePath: String,
+                     instantTime: String, countDownLatch: CountDownLatch, numRetries: Integer = 0) extends Runnable {
+    override def run() {
+      val updateRecs = recordsToStrings(dataGen.generateUniqueUpdates(instantTime, 500)).toList
+      val insertRecs = recordsToStrings(dataGen.generateInserts(instantTime, 1000)).toList
+      val updateDf = spark.read.json(spark.sparkContext.parallelize(updateRecs, 2))
+      val insertDf = spark.read.json(spark.sparkContext.parallelize(insertRecs, 2))
+      try {
+        updateDf.union(insertDf).write.format("org.apache.hudi")
+          .options(commonOpts)
+          .option("hoodie.write.concurrency.mode", "optimistic_concurrency_control")
+          .option("hoodie.cleaner.policy.failed.writes", "LAZY")
+          .option("hoodie.write.lock.provider", "org.apache.hudi.client.transaction.lock.InProcessLockProvider")
+          .option(HoodieWriteConfig.NUM_RETRIES_ON_CONFLICT_FAILURES.key(), numRetries.toString)
+          .mode(SaveMode.Append)
+          .save(basePath)
+      } finally {
+        countDownLatch.countDown()
+      }
+    }
+  }
+
+  @Test
+  def testOverWriteModeUseReplaceAction(): Unit = {
+    val (writeOpts, readOpts) = getWriterReaderOpts()
     val records1 = recordsToStrings(dataGen.generateInserts("001", 5)).toList
     val inputDF1 = spark.read.json(spark.sparkContext.parallelize(records1, 2))
     inputDF1.write.format("org.apache.hudi")
@@ -631,10 +797,9 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
     assertEquals(expectedCount, hudiReadPathDF.count())
   }
 
-  @ParameterizedTest
-  @EnumSource(value = classOf[HoodieRecordType], names = Array("AVRO", "SPARK"))
-  def testOverWriteTableModeUseReplaceAction(recordType: HoodieRecordType): Unit = {
-    val (writeOpts, readOpts) = getWriterReaderOpts(recordType)
+  @Test
+  def testOverWriteTableModeUseReplaceAction(): Unit = {
+    val (writeOpts, readOpts) = getWriterReaderOpts()
 
     val records1 = recordsToStrings(dataGen.generateInserts("001", 5)).toList
     val inputDF1 = spark.read.json(spark.sparkContext.parallelize(records1, 2))
@@ -661,10 +826,9 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
     assertEquals("replacecommit", commits(1))
   }
 
-  @ParameterizedTest
-  @EnumSource(value = classOf[HoodieRecordType], names = Array("AVRO", "SPARK"))
-  def testOverWriteModeUseReplaceActionOnDisJointPartitions(recordType: HoodieRecordType): Unit = {
-    val (writeOpts, readOpts) = getWriterReaderOpts(recordType)
+  @Test
+  def testOverWriteModeUseReplaceActionOnDisJointPartitions(): Unit = {
+    val (writeOpts, readOpts) = getWriterReaderOpts()
 
     // step1: Write 5 records to hoodie table for partition1 DEFAULT_FIRST_PARTITION_PATH
     val records1 = recordsToStrings(dataGen.generateInsertsForPartition("001", 5, HoodieTestDataGenerator.DEFAULT_FIRST_PARTITION_PATH)).toList
@@ -721,10 +885,9 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
     assertEquals("replacecommit", commits(2))
   }
 
-  @ParameterizedTest
-  @EnumSource(value = classOf[HoodieRecordType], names = Array("AVRO", "SPARK"))
-  def testOverWriteTableModeUseReplaceActionOnDisJointPartitions(recordType: HoodieRecordType): Unit = {
-    val (writeOpts, readOpts) = getWriterReaderOpts(recordType)
+  @Test
+  def testOverWriteTableModeUseReplaceActionOnDisJointPartitions(): Unit = {
+    val (writeOpts, readOpts) = getWriterReaderOpts()
 
     // step1: Write 5 records to hoodie table for partition1 DEFAULT_FIRST_PARTITION_PATH
     val records1 = recordsToStrings(dataGen.generateInsertsForPartition("001", 5, HoodieTestDataGenerator.DEFAULT_FIRST_PARTITION_PATH)).toList
@@ -860,10 +1023,9 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
     })
   }
 
-  @ParameterizedTest
-  @EnumSource(value = classOf[HoodieRecordType], names = Array("AVRO", "SPARK"))
-  def testWithAutoCommitOn(recordType: HoodieRecordType): Unit = {
-    val (writeOpts, readOpts) = getWriterReaderOpts(recordType)
+  @Test
+  def testWithAutoCommitOn(): Unit = {
+    val (writeOpts, readOpts) = getWriterReaderOpts()
 
     val records1 = recordsToStrings(dataGen.generateInserts("000", 100)).toList
     val inputDF1 = spark.read.json(spark.sparkContext.parallelize(records1, 2))
@@ -938,11 +1100,11 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
       writer.save(basePath)
       fail("should fail when invalid PartitionKeyType is provided!")
     } catch {
-      case e: Exception =>
-        assertTrue(e.getCause.getMessage.contains("No enum constant org.apache.hudi.keygen.CustomAvroKeyGenerator.PartitionKeyType.DUMMY"))
+      case e: Exception => assertTrue(e.getCause.getMessage.contains("Unable to instantiate class org.apache.hudi.keygen.CustomKeyGenerator"))
     }
   }
 
+  @Disabled("HUDI-6320")
   @ParameterizedTest
   @EnumSource(value = classOf[HoodieRecordType], names = Array("AVRO", "SPARK"))
   def testSparkPartitionByWithCustomKeyGenerator(recordType: HoodieRecordType): Unit = {
@@ -1175,8 +1337,7 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
 
   @ParameterizedTest
   @CsvSource(Array(
-    "true,false,AVRO", "true,true,AVRO", "false,true,AVRO", "false,false,AVRO",
-    "true,false,SPARK", "true,true,SPARK", "false,true,SPARK", "false,false,SPARK"
+    "true,false,AVRO", "true,true,AVRO", "false,true,AVRO", "false,false,AVRO"
   ))
   def testQueryCOWWithBasePathAndFileIndex(partitionEncode: Boolean, isMetadataEnabled: Boolean, recordType: HoodieRecordType): Unit = {
     testPartitionPruning(
@@ -1373,11 +1534,10 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
     }
   }
 
-  @ParameterizedTest
-  @EnumSource(value = classOf[HoodieRecordType], names = Array("AVRO", "SPARK"))
-  def testSaveAsTableInDifferentModes(recordType: HoodieRecordType): Unit = {
+  @Test
+  def testSaveAsTableInDifferentModes(): Unit = {
     val options = scala.collection.mutable.Map.empty ++ commonOpts ++ Map("path" -> basePath)
-    val (writeOpts, readOpts) = getWriterReaderOpts(recordType, options.toMap)
+    val (writeOpts, readOpts) = getWriterReaderOpts(HoodieRecordType.AVRO, options.toMap)
 
     // first use the Overwrite mode
     val records1 = recordsToStrings(dataGen.generateInserts("001", 5)).toList
@@ -1440,10 +1600,9 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
     assertEquals(spark.read.format("hudi").options(readOpts).load(basePath).count(), 9)
   }
 
-  @ParameterizedTest
-  @EnumSource(value = classOf[HoodieRecordType], names = Array("AVRO", "SPARK"))
-  def testMetricsReporterViaDataSource(recordType: HoodieRecordType): Unit = {
-    val (writeOpts, _) = getWriterReaderOpts(recordType, getQuickstartWriteConfigs.asScala.toMap)
+  @Test
+  def testMetricsReporterViaDataSource(): Unit = {
+    val (writeOpts, _) = getWriterReaderOpts(HoodieRecordType.AVRO, getQuickstartWriteConfigs.asScala.toMap)
 
     val dataGenerator = new QuickstartUtils.DataGenerator()
     val records = convertToStringList(dataGenerator.generateInserts(10))
@@ -1457,7 +1616,7 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
       .option(DataSourceWriteOptions.OPERATION.key, DataSourceWriteOptions.INSERT_OPERATION_OPT_VAL)
       .option(HoodieWriteConfig.TBL_NAME.key, "hoodie_test")
       .option(HoodieMetricsConfig.TURN_METRICS_ON.key(), "true")
-      .option(HoodieMetricsConfig.METRICS_REPORTER_TYPE_VALUE.key(), "CONSOLE")
+      .option(HoodieMetricsConfig.METRICS_REPORTER_TYPE_VALUE.key(), MetricsReporterType.INMEMORY.name)
       .mode(SaveMode.Overwrite)
       .save(basePath)
 
@@ -1537,7 +1696,7 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
       })
   }
 
-  def getWriterReaderOpts(recordType: HoodieRecordType,
+  def getWriterReaderOpts(recordType: HoodieRecordType = HoodieRecordType.AVRO,
                           opt: Map[String, String] = commonOpts,
                           enableFileIndex: Boolean = DataSourceReadOptions.ENABLE_HOODIE_FILE_INDEX.defaultValue()):
   (Map[String, String], Map[String, String]) = {
@@ -1629,8 +1788,8 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
       (df2.write.format("hudi").options(hudiOptions).mode("append").save(basePath))
       fail("Option succeeded, but was expected to fail.")
     } catch {
-      case ex: org.apache.hudi.exception.HoodieInsertException => {
-        assertTrue(ex.getMessage.equals("Failed insert schema compatibility check"))
+      case ex: SchemaBackwardsCompatibilityException => {
+        assertTrue(ex.getMessage.contains(SchemaIncompatibilityType.READER_FIELD_MISSING_DEFAULT_VALUE.name()))
       }
       case ex: Exception => {
         fail(ex)
@@ -1639,7 +1798,7 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
 
     // Try adding the string column again. This operation is expected to succeed since 'MAKE_NEW_COLUMNS_NULLABLE'
     // parameter has been set to 'true'.
-    hudiOptions = hudiOptions + (HoodieCommonConfig.MAKE_NEW_COLUMNS_NULLABLE.key() -> "true")
+    hudiOptions = hudiOptions + (HoodieCommonConfig.SET_NULL_FOR_MISSING_COLUMNS.key() -> "true")
     try {
       (df2.write.format("hudi").options(hudiOptions).mode("append").save(basePath))
     } catch {
@@ -1648,6 +1807,157 @@ class TestCOWDataSource extends HoodieSparkClientTestBase with ScalaAssertionSup
       }
     }
   }
+
+  def assertLastCommitIsUpsert(): Boolean = {
+    val metaClient = HoodieTableMetaClient.builder()
+      .setBasePath(basePath)
+      .setConf(hadoopConf)
+      .build()
+    val timeline = metaClient.getActiveTimeline.getAllCommitsTimeline
+    val latestCommit = timeline.lastInstant()
+    assert(latestCommit.isPresent)
+    assert(latestCommit.get().isCompleted)
+    val metadata = TimelineUtils.getCommitMetadata(latestCommit.get(), timeline)
+    metadata.getOperationType.equals(WriteOperationType.UPSERT)
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = classOf[HoodieInstant.State], names = Array("REQUESTED", "INFLIGHT", "COMPLETED"))
+  def testInsertOverwriteCluster(firstClusteringState: HoodieInstant.State): Unit = {
+    val (writeOpts, _) = getWriterReaderOpts()
+
+    // Insert Operation
+    val records = recordsToStrings(dataGen.generateInserts("000", 100)).toList
+    val inputDF = spark.read.json(spark.sparkContext.parallelize(records, 2))
+
+    val optsWithCluster = Map(
+      INLINE_CLUSTERING_ENABLE.key() -> "true",
+      "hoodie.clustering.inline.max.commits" -> "2",
+      "hoodie.clustering.plan.strategy.sort.columns" -> "_row_key",
+      "hoodie.clustering.plan.strategy.max.num.groups" -> "1",
+      "hoodie.insert.shuffle.parallelism" -> "4",
+      "hoodie.upsert.shuffle.parallelism" -> "4",
+      DataSourceWriteOptions.RECORDKEY_FIELD.key -> "_row_key",
+      DataSourceWriteOptions.PARTITIONPATH_FIELD.key -> "partition",
+      HoodieWriteConfig.TBL_NAME.key -> "hoodie_test"
+    ) ++ writeOpts
+    inputDF.write.format("hudi")
+      .options(optsWithCluster)
+      .option(DataSourceWriteOptions.OPERATION.key, DataSourceWriteOptions.INSERT_OPERATION_OPT_VAL)
+      .mode(SaveMode.Overwrite)
+      .save(basePath)
+
+    val metaClient = HoodieTableMetaClient.builder()
+      .setBasePath(basePath)
+      .setConf(hadoopConf)
+      .build()
+
+    assertTrue(metaClient.getActiveTimeline.getLastClusteringInstant.isEmpty)
+
+    var lastClustering: HoodieInstant = null
+    for (i <- 1 until 4) {
+      val records = recordsToStrings(dataGen.generateInsertsForPartition("00" + i, 10, HoodieTestDataGenerator.DEFAULT_FIRST_PARTITION_PATH)).toList
+      val inputDF = spark.read.json(spark.sparkContext.parallelize(records, 2))
+      inputDF.write.format("hudi")
+        .options(optsWithCluster)
+        .option(DataSourceWriteOptions.OPERATION.key, DataSourceWriteOptions.INSERT_OVERWRITE_OPERATION_OPT_VAL)
+        .mode(SaveMode.Append)
+        .save(basePath)
+      val lastInstant = metaClient.reloadActiveTimeline.getCommitsTimeline.lastInstant.get
+      if (i == 1 || i == 3) {
+        // Last instant is clustering
+        assertTrue(TimelineUtils.getCommitMetadata(lastInstant, metaClient.getActiveTimeline)
+          .getOperationType.equals(WriteOperationType.CLUSTER))
+        assertTrue(ClusteringUtils.isClusteringInstant(metaClient.getActiveTimeline, lastInstant))
+        lastClustering = lastInstant
+        assertEquals(
+          lastClustering,
+          metaClient.getActiveTimeline.getLastClusteringInstant.get)
+      } else {
+        assertTrue(TimelineUtils.getCommitMetadata(lastInstant, metaClient.getActiveTimeline)
+          .getOperationType.equals(WriteOperationType.INSERT_OVERWRITE))
+        assertFalse(ClusteringUtils.isClusteringInstant(metaClient.getActiveTimeline, lastInstant))
+        assertEquals(
+          lastClustering,
+          metaClient.getActiveTimeline.getLastClusteringInstant.get)
+      }
+      if (i == 1) {
+        val writeConfig = HoodieWriteConfig.newBuilder()
+          .forTable("hoodie_test")
+          .withPath(basePath)
+          .withProps(optsWithCluster)
+          .build()
+        if (firstClusteringState == HoodieInstant.State.INFLIGHT
+          || firstClusteringState == HoodieInstant.State.REQUESTED) {
+          // Move the clustering to inflight for testing
+          fs.delete(new Path(metaClient.getMetaPath, lastInstant.getFileName), false)
+          val inflightClustering = metaClient.reloadActiveTimeline.lastInstant.get
+          assertTrue(inflightClustering.isInflight)
+          assertEquals(
+            inflightClustering,
+            metaClient.getActiveTimeline.getLastClusteringInstant.get)
+        }
+        if (firstClusteringState == HoodieInstant.State.REQUESTED) {
+          val table = HoodieSparkTable.create(writeConfig, context)
+          table.rollbackInflightClustering(
+            metaClient.getActiveTimeline.getLastClusteringInstant.get,
+            new java.util.function.Function[String, Option[HoodiePendingRollbackInfo]] {
+              override def apply(commitToRollback: String): Option[HoodiePendingRollbackInfo] = {
+                new SparkRDDWriteClient(context, writeConfig).getTableServiceClient
+                  .getPendingRollbackInfo(table.getMetaClient, commitToRollback, false)
+              }
+            })
+          val requestedClustering = metaClient.reloadActiveTimeline.getCommitsTimeline.lastInstant.get
+          assertTrue(requestedClustering.isRequested)
+          assertEquals(
+            requestedClustering,
+            metaClient.getActiveTimeline.getLastClusteringInstant.get)
+        }
+        // This should not schedule any new clustering
+        new SparkRDDWriteClient(context, writeConfig)
+          .scheduleClustering(org.apache.hudi.common.util.Option.of(Map[String, String]()))
+        assertEquals(lastInstant.getTimestamp,
+          metaClient.reloadActiveTimeline.getCommitsTimeline.lastInstant.get.getTimestamp)
+      }
+    }
+    val timeline = metaClient.reloadActiveTimeline
+    val instants = timeline.getCommitsTimeline.getInstants
+    assertEquals(6, instants.size)
+    val replaceInstants = instants.filter(i => i.getAction.equals(HoodieTimeline.REPLACE_COMMIT_ACTION)).toList
+    assertEquals(5, replaceInstants.size)
+    val clusterInstants = replaceInstants.filter(i => {
+      TimelineUtils.getCommitMetadata(i, metaClient.getActiveTimeline).getOperationType.equals(WriteOperationType.CLUSTER)
+    })
+    assertEquals(2, clusterInstants.size)
+  }
+
+
+  @Test
+  def testReadOfAnEmptyTable(): Unit = {
+    val (writeOpts, _) = getWriterReaderOpts(HoodieRecordType.AVRO)
+
+    // Insert Operation
+    val records = recordsToStrings(dataGen.generateInserts("000", 100)).toList
+    val inputDF = spark.read.json(spark.sparkContext.parallelize(records, 2))
+    inputDF.write.format("hudi")
+      .options(writeOpts)
+      .option(DataSourceWriteOptions.OPERATION.key, DataSourceWriteOptions.INSERT_OPERATION_OPT_VAL)
+      .mode(SaveMode.Overwrite)
+      .save(basePath)
+
+    val fileStatuses = fs.listStatus(new Path(basePath + Path.SEPARATOR + HoodieTableMetaClient.METAFOLDER_NAME), new PathFilter {
+      override def accept(path: Path): Boolean = {
+        path.getName.endsWith(HoodieTimeline.COMMIT_ACTION)
+      }
+    })
+
+    // delete completed instant
+    fs.delete(fileStatuses.toList.get(0).getPath)
+    // try reading the empty table
+    val count = spark.read.format("hudi").load(basePath).count()
+    assertEquals(count, 0)
+  }
+
 }
 
 object TestCOWDataSource {

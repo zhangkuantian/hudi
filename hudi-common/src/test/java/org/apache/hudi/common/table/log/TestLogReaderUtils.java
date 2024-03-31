@@ -19,14 +19,10 @@
 
 package org.apache.hudi.common.table.log;
 
-import org.apache.hudi.common.util.FileIOUtils;
-
 import org.junit.jupiter.api.Test;
 import org.roaringbitmap.longlong.Roaring64NavigableMap;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -35,6 +31,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static org.apache.hudi.common.testutils.FileSystemTestUtils.readLastLineFromResourceFile;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
@@ -44,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 public class TestLogReaderUtils {
   @Test
   public void testEncodeAndDecodePositions() throws IOException {
-    List<Long> positions = generatePositions();
+    Set<Long> positions = generatePositions();
     String content = LogReaderUtils.encodePositions(positions);
     Roaring64NavigableMap roaring64NavigableMap = LogReaderUtils.decodeRecordPositionsHeader(content);
     assertPositionEquals(positions, roaring64NavigableMap);
@@ -53,7 +50,7 @@ public class TestLogReaderUtils {
   @Test
   public void testEncodeBitmapAndDecodePositions() throws IOException {
     Roaring64NavigableMap positionBitmap = new Roaring64NavigableMap();
-    List<Long> positions = generatePositions();
+    Set<Long> positions = generatePositions();
     positions.forEach(positionBitmap::add);
     String content = LogReaderUtils.encodePositions(positionBitmap);
     Roaring64NavigableMap roaring64NavigableMap = LogReaderUtils.decodeRecordPositionsHeader(content);
@@ -62,25 +59,25 @@ public class TestLogReaderUtils {
 
   @Test
   public void testCompatibilityOfDecodingPositions() throws IOException {
-    List<Long> expectedPositions = Arrays.stream(
+    Set<Long> expectedPositions = Arrays.stream(
             readLastLineFromResourceFile("/format/expected_record_positions.data").split(","))
-        .map(Long::parseLong).collect(Collectors.toList());
+        .map(Long::parseLong).collect(Collectors.toSet());
     String content = readLastLineFromResourceFile("/format/record_positions_header_v3.data");
     Roaring64NavigableMap roaring64NavigableMap = LogReaderUtils.decodeRecordPositionsHeader(content);
     assertPositionEquals(expectedPositions, roaring64NavigableMap);
   }
 
-  public static List<Long> generatePositions() {
+  public static Set<Long> generatePositions() {
     Random random = new Random(0x2023);
     Set<Long> positions = new HashSet<>();
     while (positions.size() < 1000) {
       long pos = Math.abs(random.nextLong() % 1_000_000_000_000L);
       positions.add(pos);
     }
-    return new ArrayList<>(positions);
+    return positions;
   }
 
-  public static void assertPositionEquals(List<Long> expectedPositions,
+  public static void assertPositionEquals(Set<Long> expectedPositions,
                                           Roaring64NavigableMap roaring64NavigableMap) {
     List<Long> sortedExpectedPositions =
         expectedPositions.stream().sorted().collect(Collectors.toList());
@@ -91,12 +88,5 @@ public class TestLogReaderUtils {
     }
     assertFalse(expectedIterator.hasNext());
     assertFalse(iterator.hasNext());
-  }
-
-  private String readLastLineFromResourceFile(String resourceName) throws IOException {
-    try (InputStream inputStream = TestLogReaderUtils.class.getResourceAsStream(resourceName)) {
-      List<String> lines = FileIOUtils.readAsUTFStringLines(inputStream);
-      return lines.get(lines.size() - 1);
-    }
   }
 }

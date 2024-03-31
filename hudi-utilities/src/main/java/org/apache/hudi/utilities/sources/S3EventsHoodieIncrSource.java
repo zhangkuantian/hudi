@@ -23,14 +23,13 @@ import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.table.timeline.TimelineUtils.HollowCommitHandling;
 import org.apache.hudi.common.util.Option;
-import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.collection.Pair;
-import org.apache.hudi.utilities.config.CloudSourceConfig;
 import org.apache.hudi.utilities.config.S3EventsHoodieIncrSourceConfig;
 import org.apache.hudi.utilities.schema.SchemaProvider;
 import org.apache.hudi.utilities.sources.helpers.CloudDataFetcher;
 import org.apache.hudi.utilities.sources.helpers.CloudObjectIncrCheckpoint;
 import org.apache.hudi.utilities.sources.helpers.CloudObjectMetadata;
+import org.apache.hudi.utilities.sources.helpers.CloudObjectsSelectorCommon;
 import org.apache.hudi.utilities.sources.helpers.IncrSourceHelper;
 import org.apache.hudi.utilities.sources.helpers.QueryInfo;
 import org.apache.hudi.utilities.sources.helpers.QueryRunner;
@@ -54,12 +53,8 @@ import static org.apache.hudi.common.util.StringUtils.isNullOrEmpty;
 import static org.apache.hudi.utilities.config.CloudSourceConfig.ENABLE_EXISTS_CHECK;
 import static org.apache.hudi.utilities.config.HoodieIncrSourceConfig.HOODIE_SRC_BASE_PATH;
 import static org.apache.hudi.utilities.config.HoodieIncrSourceConfig.NUM_INSTANTS_PER_FETCH;
-import static org.apache.hudi.utilities.config.HoodieIncrSourceConfig.SOURCE_FILE_FORMAT;
 import static org.apache.hudi.utilities.config.S3EventsHoodieIncrSourceConfig.S3_FS_PREFIX;
-import static org.apache.hudi.utilities.config.S3EventsHoodieIncrSourceConfig.S3_IGNORE_KEY_PREFIX;
-import static org.apache.hudi.utilities.config.S3EventsHoodieIncrSourceConfig.S3_IGNORE_KEY_SUBSTRING;
 import static org.apache.hudi.utilities.config.S3EventsHoodieIncrSourceConfig.S3_INCR_ENABLE_EXISTS_CHECK;
-import static org.apache.hudi.utilities.config.S3EventsHoodieIncrSourceConfig.S3_KEY_PREFIX;
 import static org.apache.hudi.utilities.sources.helpers.CloudObjectsSelectorCommon.getCloudObjectMetadataPerPartition;
 import static org.apache.hudi.utilities.sources.helpers.IncrSourceHelper.getHollowCommitHandleMode;
 import static org.apache.hudi.utilities.sources.helpers.IncrSourceHelper.getMissingCheckpointStrategy;
@@ -73,10 +68,13 @@ public class S3EventsHoodieIncrSource extends HoodieIncrSource {
   private final String srcPath;
   private final int numInstantsPerFetch;
   private final boolean checkIfFileExists;
-  private final String fileFormat;
   private final IncrSourceHelper.MissingCheckpointStrategy missingCheckpointStrategy;
   private final QueryRunner queryRunner;
   private final CloudDataFetcher cloudDataFetcher;
+
+  private final Option<SchemaProvider> schemaProvider;
+
+  private final Option<SnapshotLoadQuerySplitter> snapshotLoadQuerySplitter;
 
   public static class Config {
     // control whether we do existence check for files before consuming them
@@ -85,18 +83,9 @@ public class S3EventsHoodieIncrSource extends HoodieIncrSource {
     @Deprecated
     static final Boolean DEFAULT_ENABLE_EXISTS_CHECK = S3_INCR_ENABLE_EXISTS_CHECK.defaultValue();
 
-    // control whether to filter the s3 objects starting with this prefix
-    @Deprecated
-    static final String S3_KEY_PREFIX = S3EventsHoodieIncrSourceConfig.S3_KEY_PREFIX.key();
     @Deprecated
     static final String S3_FS_PREFIX = S3EventsHoodieIncrSourceConfig.S3_FS_PREFIX.key();
 
-    // control whether to ignore the s3 objects starting with this prefix
-    @Deprecated
-    static final String S3_IGNORE_KEY_PREFIX = S3EventsHoodieIncrSourceConfig.S3_IGNORE_KEY_PREFIX.key();
-    // control whether to ignore the s3 objects with this substring
-    @Deprecated
-    static final String S3_IGNORE_KEY_SUBSTRING = S3EventsHoodieIncrSourceConfig.S3_IGNORE_KEY_SUBSTRING.key();
     /**
      * {@link #SPARK_DATASOURCE_OPTIONS} is json string, passed to the reader while loading dataset.
      * Example Hudi Streamer conf
@@ -106,17 +95,13 @@ public class S3EventsHoodieIncrSource extends HoodieIncrSource {
     public static final String SPARK_DATASOURCE_OPTIONS = S3EventsHoodieIncrSourceConfig.SPARK_DATASOURCE_OPTIONS.key();
   }
 
-  public static final String S3_OBJECT_KEY = "s3.object.key";
-  public static final String S3_OBJECT_SIZE = "s3.object.size";
-  public static final String S3_BUCKET_NAME = "s3.bucket.name";
-
   public S3EventsHoodieIncrSource(
       TypedProperties props,
       JavaSparkContext sparkContext,
       SparkSession sparkSession,
       SchemaProvider schemaProvider) {
     this(props, sparkContext, sparkSession, schemaProvider, new QueryRunner(sparkSession, props),
-        new CloudDataFetcher(props, getStringWithAltKeys(props, CloudSourceConfig.DATAFILE_FORMAT, true)));
+        new CloudDataFetcher(props));
   }
 
   public S3EventsHoodieIncrSource(
@@ -131,10 +116,11 @@ public class S3EventsHoodieIncrSource extends HoodieIncrSource {
     this.srcPath = getStringWithAltKeys(props, HOODIE_SRC_BASE_PATH);
     this.numInstantsPerFetch = getIntWithAltKeys(props, NUM_INSTANTS_PER_FETCH);
     this.checkIfFileExists = getBooleanWithAltKeys(props, ENABLE_EXISTS_CHECK);
-    this.fileFormat = getStringWithAltKeys(props, SOURCE_FILE_FORMAT, true);
     this.missingCheckpointStrategy = getMissingCheckpointStrategy(props);
     this.queryRunner = queryRunner;
     this.cloudDataFetcher = cloudDataFetcher;
+    this.schemaProvider = Option.ofNullable(schemaProvider);
+    this.snapshotLoadQuerySplitter = SnapshotLoadQuerySplitter.getInstance(props);
   }
 
   @Override
@@ -147,7 +133,8 @@ public class S3EventsHoodieIncrSource extends HoodieIncrSource {
             Option.of(cloudObjectIncrCheckpoint.getCommit()),
             missingCheckpointStrategy, handlingMode,
             HoodieRecord.COMMIT_TIME_METADATA_FIELD,
-            S3_OBJECT_KEY, S3_OBJECT_SIZE, true,
+            CloudObjectsSelectorCommon.S3_OBJECT_KEY,
+            CloudObjectsSelectorCommon.S3_OBJECT_SIZE, true,
             Option.ofNullable(cloudObjectIncrCheckpoint.getKey()));
     LOG.info("Querying S3 with:" + cloudObjectIncrCheckpoint + ", queryInfo:" + queryInfo);
 
@@ -155,9 +142,10 @@ public class S3EventsHoodieIncrSource extends HoodieIncrSource {
       LOG.warn("Already caught up. No new data to process");
       return Pair.of(Option.empty(), queryInfo.getEndInstant());
     }
-
-    Dataset<Row> source = queryRunner.run(queryInfo);
-    Dataset<Row> filteredSourceData = applyFilter(source, fileFormat);
+    Pair<QueryInfo, Dataset<Row>> queryInfoDatasetPair = queryRunner.run(queryInfo, snapshotLoadQuerySplitter);
+    queryInfo = queryInfoDatasetPair.getLeft();
+    Dataset<Row> filteredSourceData = queryInfoDatasetPair.getRight().filter(
+        CloudObjectsSelectorCommon.generateFilter(CloudObjectsSelectorCommon.Type.S3, props));
 
     LOG.info("Adjusting end checkpoint:" + queryInfo.getEndInstant() + " based on sourceLimit :" + sourceLimit);
     Pair<CloudObjectIncrCheckpoint, Option<Dataset<Row>>> checkPointAndDataset =
@@ -175,29 +163,15 @@ public class S3EventsHoodieIncrSource extends HoodieIncrSource {
     // Create S3 paths
     SerializableConfiguration serializableHadoopConf = new SerializableConfiguration(sparkContext.hadoopConfiguration());
     List<CloudObjectMetadata> cloudObjectMetadata = checkPointAndDataset.getRight().get()
-        .select(S3_BUCKET_NAME, S3_OBJECT_KEY, S3_OBJECT_SIZE)
+        .select(CloudObjectsSelectorCommon.S3_BUCKET_NAME,
+                CloudObjectsSelectorCommon.S3_OBJECT_KEY,
+                CloudObjectsSelectorCommon.S3_OBJECT_SIZE)
         .distinct()
         .mapPartitions(getCloudObjectMetadataPerPartition(s3Prefix, serializableHadoopConf, checkIfFileExists), Encoders.kryo(CloudObjectMetadata.class))
         .collectAsList();
     LOG.info("Total number of files to process :" + cloudObjectMetadata.size());
 
-    Option<Dataset<Row>> datasetOption = cloudDataFetcher.getCloudObjectDataDF(sparkSession, cloudObjectMetadata, props);
+    Option<Dataset<Row>> datasetOption = cloudDataFetcher.getCloudObjectDataDF(sparkSession, cloudObjectMetadata, props, schemaProvider);
     return Pair.of(datasetOption, checkPointAndDataset.getLeft().toString());
-  }
-
-  Dataset<Row> applyFilter(Dataset<Row> source, String fileFormat) {
-    String filter = S3_OBJECT_SIZE + " > 0";
-    if (!StringUtils.isNullOrEmpty(getStringWithAltKeys(props, S3_KEY_PREFIX, true))) {
-      filter = filter + " and " + S3_OBJECT_KEY + " like '" + getStringWithAltKeys(props, S3_KEY_PREFIX) + "%'";
-    }
-    if (!StringUtils.isNullOrEmpty(getStringWithAltKeys(props, S3_IGNORE_KEY_PREFIX, true))) {
-      filter = filter + " and " + S3_OBJECT_KEY + " not like '" + getStringWithAltKeys(props, S3_IGNORE_KEY_PREFIX) + "%'";
-    }
-    if (!StringUtils.isNullOrEmpty(getStringWithAltKeys(props, S3_IGNORE_KEY_SUBSTRING, true))) {
-      filter = filter + " and " + S3_OBJECT_KEY + " not like '%" + getStringWithAltKeys(props, S3_IGNORE_KEY_SUBSTRING) + "%'";
-    }
-    // add file format filtering by default
-    filter = filter + " and " + S3_OBJECT_KEY + " like '%" + fileFormat + "%'";
-    return source.filter(filter);
   }
 }

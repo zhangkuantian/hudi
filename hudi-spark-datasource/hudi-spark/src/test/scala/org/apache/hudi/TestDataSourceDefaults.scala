@@ -262,7 +262,7 @@ class TestDataSourceDefaults extends ScalaAssertionSupport {
     }
 
     // Record's key field not specified
-    assertThrows(classOf[StringIndexOutOfBoundsException]) {
+    assertThrows(classOf[HoodieKeyException]) {
       val props = new TypedProperties()
       props.setProperty(DataSourceWriteOptions.PARTITIONPATH_FIELD.key, "partitionField")
       val keyGen = new ComplexKeyGenerator(props)
@@ -414,7 +414,7 @@ class TestDataSourceDefaults extends ScalaAssertionSupport {
     {
       val keyGen = new ComplexKeyGenerator(getKeyConfig("field1,", "field1,", "false"))
 
-      val expectedKey = new HoodieKey("field1:field1", "field1")
+      val expectedKey = new HoodieKey("field1", "field1")
 
       assertEquals(expectedKey, keyGen.getKey(baseRecord))
 
@@ -494,7 +494,7 @@ class TestDataSourceDefaults extends ScalaAssertionSupport {
       val props = new TypedProperties()
       props.setProperty(DataSourceWriteOptions.PARTITIONPATH_FIELD.key, "partitionField")
 
-      assertThrows(classOf[StringIndexOutOfBoundsException]) {
+      assertThrows(classOf[HoodieKeyException]) {
         new GlobalDeleteKeyGenerator(props).getRecordKey(baseRecord)
       }
     }

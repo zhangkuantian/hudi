@@ -212,7 +212,7 @@ public class StreamReadMonitoringFunction
       return;
     }
     IncrementalInputSplits.Result result =
-        incrementalInputSplits.inputSplits(metaClient, this.issuedInstant, this.issuedOffset, this.cdcEnabled);
+        incrementalInputSplits.inputSplits(metaClient, this.issuedOffset, this.cdcEnabled);
     if (result.isEmpty()) {
       // no new instants, returns early
       return;
@@ -226,9 +226,10 @@ public class StreamReadMonitoringFunction
     this.issuedOffset = result.getOffset();
     LOG.info("\n"
             + "------------------------------------------------------------\n"
+            + "---------- table: {}\n"
             + "---------- consumed to instant: {}\n"
             + "------------------------------------------------------------",
-        this.issuedInstant);
+        conf.getString(FlinkOptions.TABLE_NAME), this.issuedInstant);
   }
 
   @Override

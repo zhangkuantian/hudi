@@ -23,10 +23,10 @@ import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.config.SerializableConfiguration;
 import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.engine.HoodieLocalEngineContext;
-import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.table.view.FileSystemViewManager;
 import org.apache.hudi.common.table.view.FileSystemViewStorageConfig;
 import org.apache.hudi.common.table.view.FileSystemViewStorageType;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
@@ -52,8 +52,8 @@ public class TimelineService {
   private static final int DEFAULT_NUM_THREADS = 250;
 
   private int serverPort;
-  private Config timelineServerConf;
-  private Configuration conf;
+  private final Config timelineServerConf;
+  private final Configuration conf;
   private transient HoodieEngineContext context;
   private transient FileSystem fs;
   private transient Javalin app = null;
@@ -66,7 +66,7 @@ public class TimelineService {
 
   public TimelineService(HoodieEngineContext context, Configuration hadoopConf, Config timelineServerConf,
                          FileSystem fileSystem, FileSystemViewManager globalFileSystemViewManager) throws IOException {
-    this.conf = FSUtils.prepareHadoopConf(hadoopConf);
+    this.conf = HadoopFSUtils.prepareHadoopConf(hadoopConf);
     this.timelineServerConf = timelineServerConf;
     this.serverPort = timelineServerConf.serverPort;
     this.context = context;
@@ -114,6 +114,9 @@ public class TimelineService {
     @Parameter(names = {"--enable-marker-requests", "-em"}, description = "Enable handling of marker-related requests")
     public boolean enableMarkerRequests = false;
 
+    @Parameter(names = {"--enable-instant-state-requests"}, description = "Enable handling of instant state requests")
+    public boolean enableInstantStateRequests = false;
+
     @Parameter(names = {"--marker-batch-threads", "-mbt"}, description = "Number of threads to use for batch processing marker creation requests")
     public int markerBatchNumThreads = 20;
 
@@ -158,6 +161,10 @@ public class TimelineService {
             + "Instants whose heartbeat is greater than the current value will not be used in early conflict detection.")
     public Long maxAllowableHeartbeatIntervalInMs = 120000L;
 
+    @Parameter(names = {"--instant-state-force-refresh-request-number"}, description =
+        "Used for timeline-server-based instant state requests, every N read requests will trigger instant state refreshing")
+    public Integer instantStateForceRefreshRequestNumber = 100;
+
     @Parameter(names = {"--help", "-h"})
     public Boolean help = false;
 
@@ -179,6 +186,7 @@ public class TimelineService {
       private boolean async = false;
       private boolean compress = true;
       private boolean enableMarkerRequests = false;
+      private boolean enableInstantStateRequests = false;
       private int markerBatchNumThreads = 20;
       private long markerBatchIntervalMs = 50L;
       private int markerParallelism = 100;
@@ -188,6 +196,8 @@ public class TimelineService {
       private Long asyncConflictDetectorInitialDelayMs = 0L;
       private Long asyncConflictDetectorPeriodMs = 30000L;
       private Long maxAllowableHeartbeatIntervalInMs = 120000L;
+
+      private int instantStateForceRefreshRequestNumber = 100;
 
       public Builder() {
       }
@@ -287,6 +297,16 @@ public class TimelineService {
         return this;
       }
 
+      public Builder enableInstantStateRequests(boolean enableCkpInstantStateRequests) {
+        this.enableInstantStateRequests = enableCkpInstantStateRequests;
+        return this;
+      }
+
+      public Builder instantStateForceRefreshRequestNumber(int instantStateForceRefreshRequestNumber) {
+        this.instantStateForceRefreshRequestNumber = instantStateForceRefreshRequestNumber;
+        return this;
+      }
+
       public Config build() {
         Config config = new Config();
         config.serverPort = this.serverPort;
@@ -308,6 +328,8 @@ public class TimelineService {
         config.asyncConflictDetectorInitialDelayMs = this.asyncConflictDetectorInitialDelayMs;
         config.asyncConflictDetectorPeriodMs = this.asyncConflictDetectorPeriodMs;
         config.maxAllowableHeartbeatIntervalInMs = this.maxAllowableHeartbeatIntervalInMs;
+        config.enableInstantStateRequests = this.enableInstantStateRequests;
+        config.instantStateForceRefreshRequestNumber = this.instantStateForceRefreshRequestNumber;
         return config;
       }
     }
@@ -379,20 +401,20 @@ public class TimelineService {
       case MEMORY:
         FileSystemViewStorageConfig.Builder inMemConfBuilder = FileSystemViewStorageConfig.newBuilder();
         inMemConfBuilder.withStorageType(FileSystemViewStorageType.MEMORY);
-        return FileSystemViewManager.createViewManager(localEngineContext, metadataConfig, inMemConfBuilder.build(), commonConfig);
+        return FileSystemViewManager.createViewManager(localEngineContext, inMemConfBuilder.build(), commonConfig);
       case SPILLABLE_DISK: {
         FileSystemViewStorageConfig.Builder spillableConfBuilder = FileSystemViewStorageConfig.newBuilder();
         spillableConfBuilder.withStorageType(FileSystemViewStorageType.SPILLABLE_DISK)
             .withBaseStoreDir(config.baseStorePathForFileGroups)
             .withMaxMemoryForView(config.maxViewMemPerTableInMB * 1024 * 1024L)
             .withMemFractionForPendingCompaction(config.memFractionForCompactionPerTable);
-        return FileSystemViewManager.createViewManager(localEngineContext, metadataConfig, spillableConfBuilder.build(), commonConfig);
+        return FileSystemViewManager.createViewManager(localEngineContext, spillableConfBuilder.build(), commonConfig);
       }
       case EMBEDDED_KV_STORE: {
         FileSystemViewStorageConfig.Builder rocksDBConfBuilder = FileSystemViewStorageConfig.newBuilder();
         rocksDBConfBuilder.withStorageType(FileSystemViewStorageType.EMBEDDED_KV_STORE)
             .withRocksDBPath(config.rocksDBPath);
-        return FileSystemViewManager.createViewManager(localEngineContext, metadataConfig, rocksDBConfBuilder.build(), commonConfig);
+        return FileSystemViewManager.createViewManager(localEngineContext, rocksDBConfBuilder.build(), commonConfig);
       }
       default:
         throw new IllegalArgumentException("Invalid view manager storage type :" + config.viewStorageType);
@@ -412,6 +434,10 @@ public class TimelineService {
     LOG.info("Closed Timeline Service");
   }
 
+  public void unregisterBasePath(String basePath) {
+    fsViewsManager.clearFileSystemView(basePath);
+  }
+
   public Configuration getConf() {
     return conf;
   }
@@ -428,10 +454,10 @@ public class TimelineService {
       System.exit(1);
     }
 
-    Configuration conf = FSUtils.prepareHadoopConf(new Configuration());
+    Configuration conf = HadoopFSUtils.prepareHadoopConf(new Configuration());
     FileSystemViewManager viewManager = buildFileSystemViewManager(cfg, new SerializableConfiguration(conf));
     TimelineService service = new TimelineService(
-        new HoodieLocalEngineContext(FSUtils.prepareHadoopConf(new Configuration())),
+        new HoodieLocalEngineContext(HadoopFSUtils.prepareHadoopConf(new Configuration())),
         new Configuration(), cfg, FileSystem.get(new Configuration()), viewManager);
     service.run();
   }

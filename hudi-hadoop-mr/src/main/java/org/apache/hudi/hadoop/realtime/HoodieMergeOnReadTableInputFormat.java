@@ -36,7 +36,6 @@ import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.hadoop.BootstrapBaseFileSplit;
 import org.apache.hudi.hadoop.FileStatusWithBootstrapBaseFile;
-import org.apache.hudi.hadoop.HiveHoodieTableFileIndex;
 import org.apache.hudi.hadoop.HoodieCopyOnWriteTableInputFormat;
 import org.apache.hudi.hadoop.LocatedFileStatusWithBootstrapBaseFile;
 import org.apache.hudi.hadoop.RealtimeFileStatus;
@@ -54,6 +53,7 @@ import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.SplitLocationInfo;
 import org.apache.hadoop.mapreduce.Job;
+import org.apache.hudi.metadata.HoodieTableMetadataUtil;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -92,13 +92,11 @@ public class HoodieMergeOnReadTableInputFormat extends HoodieCopyOnWriteTableInp
   }
 
   @Override
-  protected FileStatus createFileStatusUnchecked(FileSlice fileSlice, HiveHoodieTableFileIndex fileIndex, HoodieTableMetaClient metaClient) {
+  protected FileStatus createFileStatusUnchecked(FileSlice fileSlice, Option<HoodieInstant> latestCompletedInstantOpt,
+                                                 String tableBasePath, HoodieTableMetaClient metaClient) {
     Option<HoodieBaseFile> baseFileOpt = fileSlice.getBaseFile();
     Option<HoodieLogFile> latestLogFileOpt = fileSlice.getLatestLogFile();
     Stream<HoodieLogFile> logFiles = fileSlice.getLogFiles();
-
-    Option<HoodieInstant> latestCompletedInstantOpt = fileIndex.getLatestCompletedInstant();
-    String tableBasePath = fileIndex.getBasePath().toString();
 
     // Check if we're reading a MOR table
     if (baseFileOpt.isPresent()) {
@@ -108,6 +106,24 @@ public class HoodieMergeOnReadTableInputFormat extends HoodieCopyOnWriteTableInp
     } else {
       throw new IllegalStateException("Invalid state: either base-file or log-file has to be present");
     }
+  }
+
+  /**
+   * return non hoodie paths
+   * @param job
+   * @return
+   * @throws IOException
+   */
+  @Override
+  public FileStatus[] listStatusForNonHoodiePaths(JobConf job) throws IOException {
+    FileStatus[] fileStatuses = doListStatus(job);
+    List<FileStatus> result = new ArrayList<>();
+    for (FileStatus fileStatus : fileStatuses) {
+      String baseFilePath = fileStatus.getPath().toUri().toString();
+      RealtimeFileStatus realtimeFileStatus = new RealtimeFileStatus(fileStatus, baseFilePath, new ArrayList<>(), false, Option.empty());
+      result.add(realtimeFileStatus);
+    }
+    return result.toArray(new FileStatus[0]);
   }
 
   @Override
@@ -177,7 +193,7 @@ public class HoodieMergeOnReadTableInputFormat extends HoodieCopyOnWriteTableInp
     // build fileGroup from fsView
     Path basePath = new Path(tableMetaClient.getBasePath());
     // filter affectedPartition by inputPaths
-    List<String> affectedPartition = HoodieInputFormatUtils.getWritePartitionPaths(metadataList).stream()
+    List<String> affectedPartition = HoodieTableMetadataUtil.getWritePartitionPaths(metadataList).stream()
         .filter(k -> k.isEmpty() ? inputPaths.contains(basePath) : inputPaths.contains(new Path(basePath, k))).collect(Collectors.toList());
     if (affectedPartition.isEmpty()) {
       return result;

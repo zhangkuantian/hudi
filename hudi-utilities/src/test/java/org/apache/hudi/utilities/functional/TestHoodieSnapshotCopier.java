@@ -22,6 +22,7 @@ import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.testutils.HoodieTestUtils;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.testutils.FunctionalTestHarness;
 import org.apache.hudi.utilities.HoodieSnapshotCopier;
 
@@ -58,7 +59,7 @@ public class TestHoodieSnapshotCopier extends FunctionalTestHarness {
     outputPath = rootPath + "/output";
 
     final Configuration hadoopConf = HoodieTestUtils.getDefaultHadoopConf();
-    fs = FSUtils.getFs(basePath, hadoopConf);
+    fs = HadoopFSUtils.getFs(basePath, hadoopConf);
     HoodieTestUtils.init(hadoopConf, basePath);
   }
 
@@ -70,7 +71,7 @@ public class TestHoodieSnapshotCopier extends FunctionalTestHarness {
 
     // Do the snapshot
     HoodieSnapshotCopier copier = new HoodieSnapshotCopier();
-    copier.snapshot(jsc(), basePath, outputPath, true,
+    copier.snapshot(jsc(), basePath, outputPath,
         HoodieMetadataConfig.DEFAULT_METADATA_ENABLE_FOR_READERS);
 
     // Nothing changed; we just bail out
@@ -124,7 +125,7 @@ public class TestHoodieSnapshotCopier extends FunctionalTestHarness {
 
     // Do a snapshot copy
     HoodieSnapshotCopier copier = new HoodieSnapshotCopier();
-    copier.snapshot(jsc(), basePath, outputPath, false, HoodieMetadataConfig.DEFAULT_METADATA_ENABLE_FOR_READERS);
+    copier.snapshot(jsc(), basePath, outputPath, HoodieMetadataConfig.DEFAULT_METADATA_ENABLE_FOR_READERS);
 
     // Check results
     assertTrue(fs.exists(new Path(outputPath + "/2016/05/01/" + file11.getName())));

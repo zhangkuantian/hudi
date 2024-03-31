@@ -24,6 +24,7 @@ import org.apache.hudi.HoodieBaseRelation.isSchemaEvolutionEnabledOnRead
 import org.apache.hudi.HoodieSparkConfUtils.getHollowCommitHandling
 import org.apache.hudi.client.common.HoodieSparkEngineContext
 import org.apache.hudi.client.utils.SparkInternalSchemaConverter
+import org.apache.hudi.common.config.SerializableConfiguration
 import org.apache.hudi.common.fs.FSUtils
 import org.apache.hudi.common.model.{HoodieCommitMetadata, HoodieFileFormat, HoodieRecord, HoodieReplaceCommitMetadata}
 import org.apache.hudi.common.table.timeline.TimelineUtils.HollowCommitHandling.USE_TRANSITION_TIME
@@ -94,9 +95,9 @@ class IncrementalRelation(val sqlContext: SQLContext,
 
   private val commitsTimelineToReturn = {
     if (hollowCommitHandling == USE_TRANSITION_TIME) {
-      commitTimeline.findInstantsInRangeByStateTransitionTime(
+      commitTimeline.findInstantsInRangeByCompletionTime(
         optParams(DataSourceReadOptions.BEGIN_INSTANTTIME.key),
-        optParams.getOrElse(DataSourceReadOptions.END_INSTANTTIME.key(), lastInstant.getStateTransitionTime))
+        optParams.getOrElse(DataSourceReadOptions.END_INSTANTTIME.key(), lastInstant.getCompletionTime))
     } else {
       commitTimeline.findInstantsInRange(
         optParams(DataSourceReadOptions.BEGIN_INSTANTTIME.key),
@@ -212,8 +213,8 @@ class IncrementalRelation(val sqlContext: SQLContext,
       //   1. the start commit is archived
       //   2. the end commit is archived
       //   3. there are files in metadata be deleted
-      val fallbackToFullTableScan = optParams.getOrElse(DataSourceReadOptions.INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN_FOR_NON_EXISTING_FILES.key,
-        DataSourceReadOptions.INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN_FOR_NON_EXISTING_FILES.defaultValue).toBoolean
+      val fallbackToFullTableScan = optParams.getOrElse(DataSourceReadOptions.INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN.key,
+        DataSourceReadOptions.INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN.defaultValue).toBoolean
 
       val sOpts = optParams.filter(p => !p._1.equalsIgnoreCase("path"))
 
@@ -239,11 +240,17 @@ class IncrementalRelation(val sqlContext: SQLContext,
           var doFullTableScan = false
 
           if (fallbackToFullTableScan) {
-            val fs = basePath.getFileSystem(sqlContext.sparkContext.hadoopConfiguration);
+            // val fs = basePath.getFileSystem(sqlContext.sparkContext.hadoopConfiguration);
             val timer = HoodieTimer.start
 
             val allFilesToCheck = filteredMetaBootstrapFullPaths ++ filteredRegularFullPaths
-            val firstNotFoundPath = allFilesToCheck.find(path => !fs.exists(new Path(path)))
+            val serializedConf = new SerializableConfiguration(sqlContext.sparkContext.hadoopConfiguration)
+            val localBasePathStr = basePath.toString
+            val firstNotFoundPath = sqlContext.sparkContext.parallelize(allFilesToCheck.toSeq, allFilesToCheck.size)
+              .map(path => {
+                val fs = new Path(localBasePathStr).getFileSystem(serializedConf.get)
+                fs.exists(new Path(path))
+              }).collect().find(v => !v)
             val timeTaken = timer.endTimer()
             log.info("Checking if paths exists took " + timeTaken + "ms")
 

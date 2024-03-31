@@ -36,6 +36,7 @@ import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.ReflectionUtils;
 import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.collection.Pair;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.utilities.exception.HoodieSnapshotExporterException;
 
 import com.beust.jcommander.IValueValidator;
@@ -119,12 +120,12 @@ public class HoodieSnapshotExporter {
   }
 
   public void export(JavaSparkContext jsc, Config cfg) throws IOException {
-    FileSystem outputFs = FSUtils.getFs(cfg.targetOutputPath, jsc.hadoopConfiguration());
+    FileSystem outputFs = HadoopFSUtils.getFs(cfg.targetOutputPath, jsc.hadoopConfiguration());
     if (outputFs.exists(new Path(cfg.targetOutputPath))) {
       throw new HoodieSnapshotExporterException("The target output path already exists.");
     }
 
-    FileSystem sourceFs = FSUtils.getFs(cfg.sourceBasePath, jsc.hadoopConfiguration());
+    FileSystem sourceFs = HadoopFSUtils.getFs(cfg.sourceBasePath, jsc.hadoopConfiguration());
     final String latestCommitTimestamp = getLatestCommitTimestamp(sourceFs, cfg)
         .<HoodieSnapshotExporterException>orElseThrow(() -> {
           throw new HoodieSnapshotExporterException("No commits present. Nothing to snapshot.");
@@ -155,7 +156,7 @@ public class HoodieSnapshotExporter {
   }
 
   private List<String> getPartitions(HoodieEngineContext engineContext, Config cfg) {
-    return FSUtils.getAllPartitionPaths(engineContext, cfg.sourceBasePath, true, false);
+    return FSUtils.getAllPartitionPaths(engineContext, cfg.sourceBasePath, true);
   }
 
   private void createSuccessTag(FileSystem fs, Config cfg) throws IOException {
@@ -210,7 +211,7 @@ public class HoodieSnapshotExporter {
           .map(f -> Pair.of(partition, f.getPath()))
           .collect(Collectors.toList());
       // also need to copy over partition metadata
-      FileSystem fs = FSUtils.getFs(cfg.sourceBasePath, serConf.newCopy());
+      FileSystem fs = HadoopFSUtils.getFs(cfg.sourceBasePath, serConf.newCopy());
       Path partitionMetaFile = HoodiePartitionMetadata.getPartitionMetafilePath(fs,
           FSUtils.getPartitionPath(cfg.sourceBasePath, partition)).get();
       if (fs.exists(partitionMetaFile)) {
@@ -223,8 +224,8 @@ public class HoodieSnapshotExporter {
       String partition = partitionAndFile.getLeft();
       Path sourceFilePath = new Path(partitionAndFile.getRight());
       Path toPartitionPath = FSUtils.getPartitionPath(cfg.targetOutputPath, partition);
-      FileSystem executorSourceFs = FSUtils.getFs(cfg.sourceBasePath, serConf.newCopy());
-      FileSystem executorOutputFs = FSUtils.getFs(cfg.targetOutputPath, serConf.newCopy());
+      FileSystem executorSourceFs = HadoopFSUtils.getFs(cfg.sourceBasePath, serConf.newCopy());
+      FileSystem executorOutputFs = HadoopFSUtils.getFs(cfg.targetOutputPath, serConf.newCopy());
 
       if (!executorOutputFs.exists(toPartitionPath)) {
         executorOutputFs.mkdirs(toPartitionPath);
@@ -242,20 +243,24 @@ public class HoodieSnapshotExporter {
     // Also copy the .commit files
     LOG.info(String.format("Copying .commit files which are no-late-than %s.", latestCommitTimestamp));
     FileStatus[] commitFilesToCopy =
-        sourceFs.listStatus(new Path(cfg.sourceBasePath + "/" + HoodieTableMetaClient.METAFOLDER_NAME), commitFilePath -> {
-          if (commitFilePath.getName().equals(HoodieTableConfig.HOODIE_PROPERTIES_FILE)) {
-            return true;
-          } else {
-            String instantTime = FSUtils.getCommitFromCommitFile(commitFilePath.getName());
-            return HoodieTimeline.compareTimestamps(instantTime, HoodieTimeline.LESSER_THAN_OR_EQUALS, latestCommitTimestamp
-            );
-          }
-        });
+        Arrays.stream(sourceFs.listStatus(new Path(cfg.sourceBasePath + "/" + HoodieTableMetaClient.METAFOLDER_NAME)))
+            .filter(fileStatus -> {
+              Path path = fileStatus.getPath();
+              if (path.getName().equals(HoodieTableConfig.HOODIE_PROPERTIES_FILE)) {
+                return true;
+              } else {
+                if (fileStatus.isDirectory()) {
+                  return false;
+                }
+                String instantTime = FSUtils.getCommitFromCommitFile(path.getName());
+                return HoodieTimeline.compareTimestamps(instantTime, HoodieTimeline.LESSER_THAN_OR_EQUALS, latestCommitTimestamp);
+              }
+            }).toArray(FileStatus[]::new);
     context.foreach(Arrays.asList(commitFilesToCopy), commitFile -> {
       Path targetFilePath =
           new Path(cfg.targetOutputPath + "/" + HoodieTableMetaClient.METAFOLDER_NAME + "/" + commitFile.getPath().getName());
-      FileSystem executorSourceFs = FSUtils.getFs(cfg.sourceBasePath, serConf.newCopy());
-      FileSystem executorOutputFs = FSUtils.getFs(cfg.targetOutputPath, serConf.newCopy());
+      FileSystem executorSourceFs = HadoopFSUtils.getFs(cfg.sourceBasePath, serConf.newCopy());
+      FileSystem executorOutputFs = HadoopFSUtils.getFs(cfg.targetOutputPath, serConf.newCopy());
 
       if (!executorOutputFs.exists(targetFilePath.getParent())) {
         executorOutputFs.mkdirs(targetFilePath.getParent());

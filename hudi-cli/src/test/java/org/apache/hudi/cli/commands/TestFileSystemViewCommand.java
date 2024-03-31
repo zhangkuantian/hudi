@@ -270,12 +270,12 @@ public class TestFileSystemViewCommand extends CLIFunctionalTestHarness {
       row[idx++] = fs.getLogFiles().count();
       row[idx++] = fs.getLogFiles().mapToLong(HoodieLogFile::getFileSize).sum();
       long logFilesScheduledForCompactionTotalSize =
-          fs.getLogFiles().filter(lf -> lf.getBaseCommitTime().equals(fs.getBaseInstantTime()))
+          fs.getLogFiles().filter(lf -> lf.getDeltaCommitTime().equals(fs.getBaseInstantTime()))
               .mapToLong(HoodieLogFile::getFileSize).sum();
       row[idx++] = logFilesScheduledForCompactionTotalSize;
 
       long logFilesUnscheduledTotalSize =
-          fs.getLogFiles().filter(lf -> !lf.getBaseCommitTime().equals(fs.getBaseInstantTime()))
+          fs.getLogFiles().filter(lf -> !lf.getDeltaCommitTime().equals(fs.getBaseInstantTime()))
               .mapToLong(HoodieLogFile::getFileSize).sum();
       row[idx++] = logFilesUnscheduledTotalSize;
 
@@ -285,9 +285,9 @@ public class TestFileSystemViewCommand extends CLIFunctionalTestHarness {
       double logUnscheduledToBaseRatio = dataFileSize > 0 ? logFilesUnscheduledTotalSize / (dataFileSize * 1.0) : -1;
       row[idx++] = logUnscheduledToBaseRatio;
 
-      row[idx++] = fs.getLogFiles().filter(lf -> lf.getBaseCommitTime().equals(fs.getBaseInstantTime()))
+      row[idx++] = fs.getLogFiles().filter(lf -> lf.getDeltaCommitTime().equals(fs.getBaseInstantTime()))
           .collect(Collectors.toList()).toString();
-      row[idx++] = fs.getLogFiles().filter(lf -> !lf.getBaseCommitTime().equals(fs.getBaseInstantTime()))
+      row[idx++] = fs.getLogFiles().filter(lf -> !lf.getDeltaCommitTime().equals(fs.getBaseInstantTime()))
           .collect(Collectors.toList()).toString();
       rows.add(row);
     });
@@ -323,7 +323,8 @@ public class TestFileSystemViewCommand extends CLIFunctionalTestHarness {
         .addTableHeaderField(HoodieTableHeaderFields.HEADER_DELTA_FILES_UNSCHEDULED);
 
     // Test show with partition path '2016/03/15'
-    new TableCommand().connect(partitionedTablePath, null, false, 0, 0, 0);
+    new TableCommand().connect(partitionedTablePath, null, false, 0, 0, 0,
+        "WAIT_TO_ADJUST_SKEW", 200L, false);
     Object partitionedTable = shell.evaluate(() -> "show fsview latest --partitionPath " + partitionPath);
     assertTrue(ShellEvaluationResultUtil.isSuccess(partitionedTable));
 
@@ -336,7 +337,8 @@ public class TestFileSystemViewCommand extends CLIFunctionalTestHarness {
     assertEquals(partitionedExpected, partitionedResults);
 
     // Test show for non-partitioned table
-    new TableCommand().connect(nonpartitionedTablePath, null, false, 0, 0, 0);
+    new TableCommand().connect(nonpartitionedTablePath, null, false, 0, 0, 0,
+        "WAIT_TO_ADJUST_SKEW", 200L, false);
     Object nonpartitionedTable = shell.evaluate(() -> "show fsview latest");
     assertTrue(ShellEvaluationResultUtil.isSuccess(nonpartitionedTable));
 

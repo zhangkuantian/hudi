@@ -219,21 +219,22 @@ public class CleanActionExecutor<T, I, K, O> extends BaseActionExecutor<T, I, K,
       HoodieCleanMetadata metadata = CleanerUtils.convertCleanMetadata(
           inflightInstant.getTimestamp(),
           Option.of(timer.endTimer()),
-          cleanStats
+          cleanStats,
+          cleanerPlan.getExtraMetadata()
       );
       if (!skipLocking) {
         this.txnManager.beginTransaction(Option.of(inflightInstant), Option.empty());
       }
       writeTableMetadata(metadata, inflightInstant.getTimestamp());
-      table.getActiveTimeline().transitionCleanInflightToComplete(inflightInstant,
-          TimelineMetadataUtils.serializeCleanMetadata(metadata));
+      table.getActiveTimeline().transitionCleanInflightToComplete(false,
+          inflightInstant, TimelineMetadataUtils.serializeCleanMetadata(metadata));
       LOG.info("Marked clean started on " + inflightInstant.getTimestamp() + " as complete");
       return metadata;
     } catch (IOException e) {
       throw new HoodieIOException("Failed to clean up after commit", e);
     } finally {
       if (!skipLocking) {
-        this.txnManager.endTransaction(Option.of(inflightInstant));
+        this.txnManager.endTransaction(Option.ofNullable(inflightInstant));
       }
     }
   }
@@ -261,8 +262,10 @@ public class CleanActionExecutor<T, I, K, O> extends BaseActionExecutor<T, I, K,
           LOG.info("Finishing previously unfinished cleaner instant=" + hoodieInstant);
           try {
             cleanMetadataList.add(runPendingClean(table, hoodieInstant));
+          } catch (HoodieIOException e) {
+            checkIfOtherWriterCommitted(hoodieInstant, e);
           } catch (Exception e) {
-            LOG.warn("Failed to perform previous clean operation, instant: " + hoodieInstant, e);
+            LOG.error("Failed to perform previous clean operation, instant: " + hoodieInstant, e);
             throw e;
           }
         }
@@ -277,5 +280,15 @@ public class CleanActionExecutor<T, I, K, O> extends BaseActionExecutor<T, I, K,
     // TODO (NA) : Clean only the earliest pending clean just like how we do for other table services
     // This requires the CleanActionExecutor to be refactored as BaseCommitActionExecutor
     return cleanMetadataList.size() > 0 ? cleanMetadataList.get(cleanMetadataList.size() - 1) : null;
+  }
+
+  private void checkIfOtherWriterCommitted(HoodieInstant hoodieInstant, HoodieIOException e) {
+    table.getMetaClient().reloadActiveTimeline();
+    if (table.getCleanTimeline().filterCompletedInstants().containsInstant(hoodieInstant.getTimestamp())) {
+      LOG.warn("Clean operation was completed by another writer for instant: " + hoodieInstant);
+    } else {
+      LOG.error("Failed to perform previous clean operation, instant: " + hoodieInstant, e);
+      throw e;
+    }
   }
 }

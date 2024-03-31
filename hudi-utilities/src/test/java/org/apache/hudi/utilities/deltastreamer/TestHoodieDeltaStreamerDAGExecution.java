@@ -61,7 +61,7 @@ public class TestHoodieDeltaStreamerDAGExecution extends HoodieDeltaStreamerTest
     // Configure 3 transformers of same type. 2nd transformer has no suffix
     StageListener stageListener = new StageListener("org.apache.hudi.table.action.commit.BaseCommitActionExecutor.executeClustering");
     sparkSession.sparkContext().addSparkListener(stageListener);
-    List<String> configs = getAsyncServicesConfigs(100, "false", "true", "1", "", "");
+    List<String> configs = getTableServicesConfigs(100, "false", "true", "1", "", "");
     runDeltaStreamer(WriteOperationType.UPSERT, false, Option.of(configs));
     assertEquals(1, stageListener.triggerCount);
   }
@@ -86,14 +86,14 @@ public class TestHoodieDeltaStreamerDAGExecution extends HoodieDeltaStreamerTest
         PARQUET_SOURCE_ROOT, false, "partition_path", "");
     String tableBasePath = basePath + "/runDeltaStreamer" + testNum;
     FileIOUtils.deleteDirectory(new File(tableBasePath));
-    HoodieDeltaStreamer.Config config = TestHoodieDeltaStreamer.TestHelpers.makeConfig(tableBasePath, operationType,
+    HoodieDeltaStreamer.Config config = TestHelpers.makeConfig(tableBasePath, operationType,
         ParquetDFSSource.class.getName(), null, PROPS_FILENAME_TEST_PARQUET, false,
         useSchemaProvider, 100000, false, null, HoodieTableType.MERGE_ON_READ.name(), "timestamp", null);
     configsOpt.ifPresent(cfgs -> config.configs.addAll(cfgs));
     HoodieDeltaStreamer deltaStreamer = new HoodieDeltaStreamer(config, jsc);
 
     deltaStreamer.sync();
-    TestHoodieDeltaStreamer.TestHelpers.assertRecordCount(parquetRecordsCount, tableBasePath, sqlContext);
+    assertRecordCount(parquetRecordsCount, tableBasePath, sqlContext);
     testNum++;
 
     if (shouldGenerateUpdates) {

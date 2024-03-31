@@ -26,9 +26,6 @@ import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
-import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
-import org.apache.hudi.common.table.view.FileSystemViewStorageConfig;
-import org.apache.hudi.common.table.view.FileSystemViewStorageType;
 import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.testutils.HoodieTestUtils;
 import org.apache.hudi.common.util.Option;
@@ -200,12 +197,12 @@ public class TestConsistentBucketIndex extends HoodieSparkClientTestHarness {
   @MethodSource("configParams")
   public void testWriteDataWithCompaction(boolean populateMetaFields, boolean partitioned) throws Exception {
     setUp(populateMetaFields, partitioned);
-    writeData(HoodieActiveTimeline.createNewInstantTime(), 200, true);
+    writeData(writeClient.createNewInstantTime(), 200, true);
     config.setValue(INLINE_COMPACT_NUM_DELTA_COMMITS, "1");
     config.setValue(INLINE_COMPACT_TRIGGER_STRATEGY, CompactionTriggerStrategy.NUM_COMMITS.name());
     String compactionTime = (String) writeClient.scheduleCompaction(Option.empty()).get();
     Assertions.assertEquals(200, readRecordsNum(dataGen.getPartitionPaths(), populateMetaFields));
-    writeData(HoodieActiveTimeline.createNewInstantTime(), 200, true);
+    writeData(writeClient.createNewInstantTime(), 200, true);
     Assertions.assertEquals(400, readRecordsNum(dataGen.getPartitionPaths(), populateMetaFields));
     HoodieWriteMetadata<JavaRDD<WriteStatus>> compactionMetadata = writeClient.compact(compactionTime);
     writeClient.commitCompaction(compactionTime, compactionMetadata.getCommitMetadata().get(), Option.empty());
@@ -309,7 +306,6 @@ public class TestConsistentBucketIndex extends HoodieSparkClientTestHarness {
         .withCompactionConfig(HoodieCompactionConfig.newBuilder().compactionSmallFileSize(1024 * 1024).build())
         .withStorageConfig(HoodieStorageConfig.newBuilder().hfileMaxFileSize(1024 * 1024).parquetMaxFileSize(1024 * 1024).build())
         .forTable("test-trip-table")
-        .withEmbeddedTimelineServerEnabled(true).withFileSystemViewConfig(FileSystemViewStorageConfig.newBuilder()
-            .withStorageType(FileSystemViewStorageType.EMBEDDED_KV_STORE).build());
+        .withEmbeddedTimelineServerEnabled(true);
   }
 }

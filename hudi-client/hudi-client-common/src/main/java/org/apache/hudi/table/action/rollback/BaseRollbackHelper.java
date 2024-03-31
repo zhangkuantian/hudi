@@ -56,6 +56,7 @@ import java.util.stream.Stream;
  */
 public class BaseRollbackHelper implements Serializable {
 
+  private static final long serialVersionUID = 1L;
   private static final Logger LOG = LoggerFactory.getLogger(BaseRollbackHelper.class);
   protected static final String EMPTY_STRING = "";
 
@@ -124,12 +125,11 @@ public class BaseRollbackHelper implements Serializable {
         final Path filePath;
         try {
           String fileId = rollbackRequest.getFileId();
-          String latestBaseInstant = rollbackRequest.getLatestBaseInstant();
 
           writer = HoodieLogFormat.newWriterBuilder()
               .onParentPath(FSUtils.getPartitionPath(metaClient.getBasePath(), rollbackRequest.getPartitionPath()))
               .withFileId(fileId)
-              .overBaseCommit(latestBaseInstant)
+              .withDeltaCommit(instantToRollback.getTimestamp())
               .withFs(metaClient.getFs())
               .withFileExtension(HoodieLogFile.DELTA_EXTENSION).build();
 

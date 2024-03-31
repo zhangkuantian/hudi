@@ -29,10 +29,8 @@ import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieTableType;
 import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
-import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.common.table.timeline.versioning.TimelineLayoutVersion;
 import org.apache.hudi.common.table.view.FileSystemViewStorageConfig;
-import org.apache.hudi.common.table.view.FileSystemViewStorageType;
 import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.testutils.HoodieTestUtils;
 import org.apache.hudi.common.testutils.RawTripTestPayload;
@@ -166,7 +164,8 @@ public class TestDataValidationCheckForLogCompactionActions extends HoodieClient
       }
       curr++;
     }
-
+    mainTable.client.close();
+    experimentTable.client.close();
   }
 
   private void verifyRecords(TestTableContents mainTable, TestTableContents experimentTable) {
@@ -197,7 +196,7 @@ public class TestDataValidationCheckForLogCompactionActions extends HoodieClient
   }
 
   private boolean writeOnMainTable(TestTableContents mainTable, int curr) throws IOException {
-    String commitTime = HoodieActiveTimeline.createNewInstantTime();
+    String commitTime = mainTable.client.createNewInstantTime();
     mainTable.client.startCommitWithTime(commitTime);
 
     int actionType = pickAWriteAction();
@@ -406,8 +405,7 @@ public class TestDataValidationCheckForLogCompactionActions extends HoodieClient
         .withIndexConfig(HoodieIndexConfig.newBuilder().withIndexType(indexType).build())
         .withEmbeddedTimelineServerEnabled(true).withFileSystemViewConfig(FileSystemViewStorageConfig.newBuilder()
             .withEnableBackupForRemoteFileSystemView(false) // Fail test if problem connecting to timeline-server
-            .withRemoteServerPort(timelineServicePort)
-            .withStorageType(FileSystemViewStorageType.EMBEDDED_KV_STORE).build())
+            .withRemoteServerPort(timelineServicePort).build())
         .withProperties(properties);
   }
 

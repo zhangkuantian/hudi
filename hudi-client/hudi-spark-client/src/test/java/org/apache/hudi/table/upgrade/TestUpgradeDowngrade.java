@@ -22,11 +22,13 @@ import org.apache.hudi.client.SparkRDDWriteClient;
 import org.apache.hudi.client.WriteStatus;
 import org.apache.hudi.common.config.HoodieConfig;
 import org.apache.hudi.common.config.HoodieMetadataConfig;
+import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.FileSlice;
 import org.apache.hudi.common.model.HoodieFileGroup;
 import org.apache.hudi.common.model.HoodieLogFile;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieTableType;
+import org.apache.hudi.common.model.IOType;
 import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.HoodieTableVersion;
@@ -53,8 +55,6 @@ import org.apache.hudi.table.marker.WriteMarkersFactory;
 import org.apache.hudi.testutils.HoodieClientTestBase;
 import org.apache.hudi.testutils.HoodieClientTestUtils;
 
-import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
@@ -71,10 +71,13 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -98,6 +101,7 @@ import static org.apache.hudi.common.util.PartitionPathEncodeUtils.DEPRECATED_DE
 import static org.apache.hudi.metadata.HoodieTableMetadataUtil.PARTITION_NAME_BLOOM_FILTERS;
 import static org.apache.hudi.metadata.HoodieTableMetadataUtil.PARTITION_NAME_COLUMN_STATS;
 import static org.apache.hudi.metadata.HoodieTableMetadataUtil.PARTITION_NAME_FILES;
+import static org.apache.hudi.metadata.HoodieTableMetadataUtil.PARTITION_NAME_FUNCTIONAL_INDEX_PREFIX;
 import static org.apache.hudi.metadata.HoodieTableMetadataUtil.PARTITION_NAME_RECORD_INDEX;
 import static org.apache.hudi.metadata.MetadataPartitionType.RECORD_INDEX;
 import static org.apache.hudi.testutils.Assertions.assertNoWriteErrors;
@@ -199,6 +203,7 @@ public class TestUpgradeDowngrade extends HoodieClientTestBase {
     Pair<List<HoodieRecord>, List<HoodieRecord>> inputRecords = twoUpsertCommitDataWithTwoPartitions(firstPartitionCommit2FileSlices, secondPartitionCommit2FileSlices, cfg, client, false);
 
     HoodieTable table = this.getHoodieTable(metaClient, cfg);
+    prepForUpgradeFromZeroToOne(table);
     HoodieInstant commitInstant = table.getPendingCommitTimeline().lastInstant().get();
 
     // delete one of the marker files in 2nd commit if need be.
@@ -535,7 +540,7 @@ public class TestUpgradeDowngrade extends HoodieClientTestBase {
             .withEnableRecordIndex(true).build())
         .build();
     for (MetadataPartitionType partitionType : MetadataPartitionType.values()) {
-      metaClient.getTableConfig().setMetadataPartitionState(metaClient, partitionType, true);
+      metaClient.getTableConfig().setMetadataPartitionState(metaClient, partitionType.getPartitionPath(), true);
     }
     metaClient.getTableConfig().setMetadataPartitionsInflight(metaClient, MetadataPartitionType.values());
     String metadataTableBasePath = Paths.get(basePath, METADATA_TABLE_FOLDER_PATH).toString();
@@ -551,12 +556,8 @@ public class TestUpgradeDowngrade extends HoodieClientTestBase {
         PARTITION_NAME_FILES,
         PARTITION_NAME_COLUMN_STATS,
         PARTITION_NAME_BLOOM_FILTERS,
-        PARTITION_NAME_RECORD_INDEX
-    );
-    Set<String> allPartitionsExceptRecordIndex = CollectionUtils.createImmutableSet(
-        PARTITION_NAME_FILES,
-        PARTITION_NAME_COLUMN_STATS,
-        PARTITION_NAME_BLOOM_FILTERS
+        PARTITION_NAME_RECORD_INDEX,
+        PARTITION_NAME_FUNCTIONAL_INDEX_PREFIX
     );
     assertTrue(Files.exists(recordIndexPartitionPath), "record index partition should exist.");
     assertEquals(allPartitions, metaClient.getTableConfig().getMetadataPartitions(),
@@ -571,9 +572,9 @@ public class TestUpgradeDowngrade extends HoodieClientTestBase {
     metaClient = HoodieTableMetaClient.reload(metaClient);
     // validate the relevant table states after downgrade
     assertFalse(Files.exists(recordIndexPartitionPath), "record index partition should be deleted.");
-    assertEquals(allPartitionsExceptRecordIndex, metaClient.getTableConfig().getMetadataPartitions(),
+    assertEquals(Collections.emptySet(), metaClient.getTableConfig().getMetadataPartitions(),
         TABLE_METADATA_PARTITIONS.key() + " should contain all partitions except record_index.");
-    assertEquals(allPartitionsExceptRecordIndex, metaClient.getTableConfig().getMetadataPartitionsInflight(),
+    assertEquals(Collections.emptySet(), metaClient.getTableConfig().getMetadataPartitionsInflight(),
         TABLE_METADATA_PARTITIONS_INFLIGHT.key() + " should contain all partitions except record_index.");
 
   }
@@ -697,7 +698,7 @@ public class TestUpgradeDowngrade extends HoodieClientTestBase {
       if (table.getMetaClient().getTableType() == HoodieTableType.MERGE_ON_READ) {
         for (HoodieLogFile logFile : fileSlice.getLogFiles().collect(Collectors.toList())) {
           // log file format can't be matched as is, since the write token can't be asserted. Hence asserting for partitionpath, fileId and baseCommit time.
-          String logBaseCommitTime = logFile.getBaseCommitTime();
+          String logBaseCommitTime = logFile.getDeltaCommitTime();
           expectedLogFilePaths.add(Pair.of(partitionPath + "/" + logFile.getFileId(), logBaseCommitTime));
         }
       }
@@ -848,10 +849,51 @@ public class TestUpgradeDowngrade extends HoodieClientTestBase {
     return Pair.of(records, records2);
   }
 
+  /**
+   * Since how markers are generated for log file changed in Version Six, we regenerate markers in the way version zero do.
+   *
+   * @param table instance of {@link HoodieTable}
+   */
+  private void prepForUpgradeFromZeroToOne(HoodieTable table) throws IOException {
+    List<HoodieInstant> instantsToBeParsed  =
+        metaClient.getActiveTimeline()
+        .getCommitsTimeline()
+        .getInstantsAsStream()
+        .collect(Collectors.toList());
+    for (HoodieInstant instant : instantsToBeParsed) {
+      WriteMarkers writeMarkers =
+          WriteMarkersFactory.get(table.getConfig().getMarkersType(), table, instant.getTimestamp());
+      Set<String> oldMarkers = writeMarkers.allMarkerFilePaths();
+      boolean hasAppendMarker = oldMarkers.stream().anyMatch(marker -> marker.contains(IOType.APPEND.name()) || marker.contains(IOType.CREATE.name()));
+      if (hasAppendMarker) {
+        // delete all markers and regenerate
+        writeMarkers.deleteMarkerDir(table.getContext(), 2);
+        for (String oldMarker : oldMarkers) {
+          String typeStr = oldMarker.substring(oldMarker.lastIndexOf(".") + 1);
+          IOType type = IOType.valueOf(typeStr);
+          String partitionFilePath = WriteMarkers.stripMarkerSuffix(oldMarker);
+          Path fullFilePath = new Path(basePath, partitionFilePath);
+          String partitionPath = FSUtils.getRelativePartitionPath(new Path(basePath), fullFilePath.getParent());
+          if (FSUtils.isBaseFile(fullFilePath)) {
+            writeMarkers.create(partitionPath, fullFilePath.getName(), type);
+          } else {
+            String fileId = FSUtils.getFileIdFromFilePath(fullFilePath);
+            String baseInstant = FSUtils.getDeltaCommitTimeFromLogPath(fullFilePath);
+            String writeToken = FSUtils.getWriteTokenFromLogPath(fullFilePath);
+            writeMarkers.create(partitionPath,
+                FSUtils.makeBaseFileName(baseInstant, writeToken, fileId, table.getBaseFileFormat().getFileExtension()), type);
+          }
+        }
+        writeMarkers.allMarkerFilePaths()
+            .forEach(markerPath -> assertFalse(markerPath.contains(HoodieLogFile.DELTA_EXTENSION)));
+      }
+    }
+  }
+
   private void prepForDowngradeFromVersion(HoodieTableVersion fromVersion) throws IOException {
     metaClient.getTableConfig().setTableVersion(fromVersion);
     Path propertyFile = new Path(metaClient.getMetaPath() + "/" + HoodieTableConfig.HOODIE_PROPERTIES_FILE);
-    try (FSDataOutputStream os = metaClient.getFs().create(propertyFile)) {
+    try (OutputStream os = metaClient.getFs().create(propertyFile)) {
       metaClient.getTableConfig().getProps().store(os, "");
     }
   }
@@ -884,10 +926,10 @@ public class TestUpgradeDowngrade extends HoodieClientTestBase {
     assertEquals(expectedVersion.versionCode(), metaClient.getTableConfig().getTableVersion().versionCode());
     Path propertyFile = new Path(metaClient.getMetaPath() + "/" + HoodieTableConfig.HOODIE_PROPERTIES_FILE);
     // Load the properties and verify
-    FSDataInputStream fsDataInputStream = metaClient.getFs().open(propertyFile);
+    InputStream inputStream = metaClient.getFs().open(propertyFile);
     HoodieConfig config = new HoodieConfig();
-    config.getProps().load(fsDataInputStream);
-    fsDataInputStream.close();
+    config.getProps().load(inputStream);
+    inputStream.close();
     assertEquals(Integer.toString(expectedVersion.versionCode()), config.getString(HoodieTableConfig.VERSION));
   }
 }

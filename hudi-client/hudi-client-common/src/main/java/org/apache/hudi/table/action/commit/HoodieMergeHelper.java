@@ -82,7 +82,7 @@ public class HoodieMergeHelper<T> extends BaseMergeHelper {
     HoodieRecord.HoodieRecordType recordType = table.getConfig().getRecordMerger().getRecordType();
     HoodieFileReader baseFileReader = HoodieFileReaderFactory
         .getReaderFactory(recordType)
-        .getFileReader(hadoopConf, mergeHandle.getOldFilePath());
+        .getFileReader(writeConfig, hadoopConf, mergeHandle.getOldFilePath());
     HoodieFileReader bootstrapFileReader = null;
 
     Schema writerSchema = mergeHandle.getWriterSchemaWithMetaFields();
@@ -114,7 +114,7 @@ public class HoodieMergeHelper<T> extends BaseMergeHelper {
         Configuration bootstrapFileConfig = new Configuration(table.getHadoopConf());
         bootstrapFileReader = HoodieFileReaderFactory.getReaderFactory(recordType).newBootstrapFileReader(
             baseFileReader,
-            HoodieFileReaderFactory.getReaderFactory(recordType).getFileReader(bootstrapFileConfig, bootstrapFilePath),
+            HoodieFileReaderFactory.getReaderFactory(recordType).getFileReader(writeConfig, bootstrapFileConfig, bootstrapFilePath),
             mergeHandle.getPartitionFields(),
             mergeHandle.getPartitionValues());
         recordSchema = mergeHandle.getWriterSchemaWithMetaFields();
@@ -123,7 +123,7 @@ public class HoodieMergeHelper<T> extends BaseMergeHelper {
         // In case writer's schema is simply a projection of the reader's one we can read
         // the records in the projected schema directly
         recordSchema = isPureProjection ? writerSchema : readerSchema;
-        recordIterator = baseFileReader.getRecordIterator(recordSchema);
+        recordIterator = (ClosableIterator<HoodieRecord>) baseFileReader.getRecordIterator(recordSchema);
       }
 
       boolean isBufferingRecords = ExecutorFactory.isBufferingRecords(writeConfig);
@@ -155,6 +155,9 @@ public class HoodieMergeHelper<T> extends BaseMergeHelper {
         executor.awaitTermination();
       } else {
         baseFileReader.close();
+        if (bootstrapFileReader != null) {
+          bootstrapFileReader.close();
+        }
         mergeHandle.close();
       }
     }

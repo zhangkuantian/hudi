@@ -95,6 +95,7 @@ import java.util.stream.Stream;
  */
 public class HoodieDataTableValidator implements Serializable {
 
+  private static final long serialVersionUID = 1L;
   private static final Logger LOG = LoggerFactory.getLogger(HoodieDataTableValidator.class);
 
   // Spark context
@@ -297,7 +298,7 @@ public class HoodieDataTableValidator implements Serializable {
     HoodieSparkEngineContext engineContext = new HoodieSparkEngineContext(jsc);
     try {
       HoodieTableMetadata tableMetadata = new FileSystemBackedTableMetadata(
-          engineContext, metaClient.getTableConfig(), engineContext.getHadoopConf(), cfg.basePath, cfg.assumeDatePartitioning);
+          engineContext, metaClient.getTableConfig(), engineContext.getHadoopConf(), cfg.basePath);
       List<Path> allDataFilePaths = HoodieDataTableUtils.getBaseAndLogFilePathsFromFileSystem(tableMetadata, cfg.basePath);
       // verify that no data files present with commit time < earliest commit in active timeline.
       if (metaClient.getActiveTimeline().firstInstant().isPresent()) {

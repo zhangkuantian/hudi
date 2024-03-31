@@ -24,7 +24,6 @@ import org.apache.hudi.client.WriteStatus;
 import org.apache.hudi.client.common.HoodieSparkEngineContext;
 import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.config.TypedProperties;
-import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieCommitMetadata;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieTableType;
@@ -33,7 +32,9 @@ import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.config.HoodieWriteConfig;
-import org.apache.hudi.hadoop.CachingPath;
+import org.apache.hudi.hadoop.fs.CachingPath;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
+import org.apache.hudi.storage.StoragePath;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -64,7 +65,7 @@ public class SparkSampleWritesUtils {
 
   private static final Logger LOG = LoggerFactory.getLogger(SparkSampleWritesUtils.class);
 
-  public static Option<HoodieWriteConfig> getWriteConfigWithRecordSizeEstimate(JavaSparkContext jsc, JavaRDD<HoodieRecord> records, HoodieWriteConfig writeConfig) {
+  public static Option<HoodieWriteConfig> getWriteConfigWithRecordSizeEstimate(JavaSparkContext jsc, Option<JavaRDD<HoodieRecord>> recordsOpt, HoodieWriteConfig writeConfig) {
     if (!writeConfig.getBoolean(SAMPLE_WRITES_ENABLED)) {
       LOG.debug("Skip overwriting record size estimate as it's disabled.");
       return Option.empty();
@@ -76,7 +77,7 @@ public class SparkSampleWritesUtils {
     }
     try {
       String instantTime = getInstantFromTemporalAccessor(Instant.now().atZone(ZoneId.systemDefault()));
-      Pair<Boolean, String> result = doSampleWrites(jsc, records, writeConfig, instantTime);
+      Pair<Boolean, String> result = doSampleWrites(jsc, recordsOpt, writeConfig, instantTime);
       if (result.getLeft()) {
         long avgSize = getAvgSizeFromSampleWrites(jsc, result.getRight());
         LOG.info("Overwriting record size estimate to " + avgSize);
@@ -90,7 +91,7 @@ public class SparkSampleWritesUtils {
     return Option.empty();
   }
 
-  private static Pair<Boolean, String> doSampleWrites(JavaSparkContext jsc, JavaRDD<HoodieRecord> records, HoodieWriteConfig writeConfig, String instantTime)
+  private static Pair<Boolean, String> doSampleWrites(JavaSparkContext jsc, Option<JavaRDD<HoodieRecord>> recordsOpt, HoodieWriteConfig writeConfig, String instantTime)
       throws IOException {
     final String sampleWritesBasePath = getSampleWritesBasePath(jsc, writeConfig, instantTime);
     HoodieTableMetaClient.withPropertyBuilder()
@@ -109,31 +110,37 @@ public class SparkSampleWritesUtils {
         .withAutoCommit(true)
         .withPath(sampleWritesBasePath)
         .build();
+    Pair<Boolean, String> emptyRes = Pair.of(false, null);
     try (SparkRDDWriteClient sampleWriteClient = new SparkRDDWriteClient(new HoodieSparkEngineContext(jsc), sampleWriteConfig, Option.empty())) {
       int size = writeConfig.getIntOrDefault(SAMPLE_WRITES_SIZE);
-      List<HoodieRecord> samples = records.coalesce(1).take(size);
-      sampleWriteClient.startCommitWithTime(instantTime);
-      JavaRDD<WriteStatus> writeStatusRDD = sampleWriteClient.bulkInsert(jsc.parallelize(samples, 1), instantTime);
-      if (writeStatusRDD.filter(WriteStatus::hasErrors).count() > 0) {
-        LOG.error(String.format("sample writes for table %s failed with errors.", writeConfig.getTableName()));
-        if (LOG.isTraceEnabled()) {
-          LOG.trace("Printing out the top 100 errors");
-          writeStatusRDD.filter(WriteStatus::hasErrors).take(100).forEach(ws -> {
-            LOG.trace("Global error :", ws.getGlobalError());
-            ws.getErrors().forEach((key, throwable) ->
-                LOG.trace(String.format("Error for key: %s", key), throwable));
-          });
+      return recordsOpt.map(records -> {
+        List<HoodieRecord> samples = records.coalesce(1).take(size);
+        if (samples.isEmpty()) {
+          return emptyRes;
         }
-        return Pair.of(false, null);
-      } else {
-        return Pair.of(true, sampleWritesBasePath);
-      }
+        sampleWriteClient.startCommitWithTime(instantTime);
+        JavaRDD<WriteStatus> writeStatusRDD = sampleWriteClient.bulkInsert(jsc.parallelize(samples, 1), instantTime);
+        if (writeStatusRDD.filter(WriteStatus::hasErrors).count() > 0) {
+          LOG.error(String.format("sample writes for table %s failed with errors.", writeConfig.getTableName()));
+          if (LOG.isTraceEnabled()) {
+            LOG.trace("Printing out the top 100 errors");
+            writeStatusRDD.filter(WriteStatus::hasErrors).take(100).forEach(ws -> {
+              LOG.trace("Global error :", ws.getGlobalError());
+              ws.getErrors().forEach((key, throwable) ->
+                  LOG.trace(String.format("Error for key: %s", key), throwable));
+            });
+          }
+          return emptyRes;
+        } else {
+          return Pair.of(true, sampleWritesBasePath);
+        }
+      }).orElse(emptyRes);
     }
   }
 
   private static String getSampleWritesBasePath(JavaSparkContext jsc, HoodieWriteConfig writeConfig, String instantTime) throws IOException {
-    Path basePath = new CachingPath(writeConfig.getBasePath(), SAMPLE_WRITES_FOLDER_PATH + Path.SEPARATOR + instantTime);
-    FileSystem fs = FSUtils.getFs(basePath, jsc.hadoopConfiguration());
+    Path basePath = new CachingPath(writeConfig.getBasePath(), SAMPLE_WRITES_FOLDER_PATH + StoragePath.SEPARATOR + instantTime);
+    FileSystem fs = HadoopFSUtils.getFs(basePath, jsc.hadoopConfiguration());
     if (fs.exists(basePath)) {
       fs.delete(basePath, true);
     }
@@ -153,7 +160,7 @@ public class SparkSampleWritesUtils {
   }
 
   private static HoodieTableMetaClient getMetaClient(JavaSparkContext jsc, String basePath) {
-    FileSystem fs = FSUtils.getFs(basePath, jsc.hadoopConfiguration());
+    FileSystem fs = HadoopFSUtils.getFs(basePath, jsc.hadoopConfiguration());
     return HoodieTableMetaClient.builder().setConf(fs.getConf()).setBasePath(basePath).build();
   }
 }

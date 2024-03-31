@@ -82,7 +82,7 @@ public abstract class BaseDatasetBulkInsertCommitActionExecutor implements Seria
       hoodieWriteMetadata.setWriteStatuses(HoodieJavaRDD.getJavaRDD(statuses));
       hoodieWriteMetadata.setPartitionToReplaceFileIds(getPartitionToReplacedFileIds(statuses));
       return hoodieWriteMetadata;
-    }).orElse(new HoodieWriteMetadata<>());
+    }).orElseGet(HoodieWriteMetadata::new);
   }
 
   public final HoodieWriteResult execute(Dataset<Row> records, boolean isTablePartitioned) {
@@ -95,8 +95,7 @@ public abstract class BaseDatasetBulkInsertCommitActionExecutor implements Seria
     table = writeClient.initTable(getWriteOperationType(), Option.ofNullable(instantTime));
 
     BulkInsertPartitioner<Dataset<Row>> bulkInsertPartitionerRows = getPartitioner(populateMetaFields, isTablePartitioned);
-    boolean shouldDropPartitionColumns = writeConfig.getBoolean(DataSourceWriteOptions.DROP_PARTITION_COLUMNS());
-    Dataset<Row> hoodieDF = HoodieDatasetBulkInsertHelper.prepareForBulkInsert(records, writeConfig, bulkInsertPartitionerRows, shouldDropPartitionColumns, instantTime);
+    Dataset<Row> hoodieDF = HoodieDatasetBulkInsertHelper.prepareForBulkInsert(records, writeConfig, bulkInsertPartitionerRows, instantTime);
 
     preExecute();
     HoodieWriteMetadata<JavaRDD<WriteStatus>> result = buildHoodieWriteMetadata(doExecute(hoodieDF, bulkInsertPartitionerRows.arePartitionRecordsSorted()));
@@ -118,7 +117,7 @@ public abstract class BaseDatasetBulkInsertCommitActionExecutor implements Seria
           return new BucketIndexBulkInsertPartitionerWithRows(writeConfig.getBucketIndexHashFieldWithDefault(),
               writeConfig.getBucketIndexNumBuckets());
         } else {
-          return new ConsistentBucketIndexBulkInsertPartitionerWithRows(table, true);
+          return new ConsistentBucketIndexBulkInsertPartitionerWithRows(table, Collections.emptyMap(), true);
         }
       } else {
         return DataSourceUtils

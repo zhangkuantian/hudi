@@ -17,39 +17,44 @@
 
 package org.apache.hudi
 
-import org.apache.avro.Schema
-import org.apache.avro.generic.GenericRecord
-import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.{FileStatus, Path}
-import org.apache.hadoop.hbase.io.hfile.CacheConfig
-import org.apache.hadoop.mapred.JobConf
 import org.apache.hudi.AvroConversionUtils.getAvroSchemaWithDefaults
 import org.apache.hudi.HoodieBaseRelation._
 import org.apache.hudi.HoodieConversionUtils.toScalaOption
 import org.apache.hudi.avro.HoodieAvroUtils
 import org.apache.hudi.client.utils.SparkInternalSchemaConverter
-import org.apache.hudi.common.config.{ConfigProperty, HoodieMetadataConfig, SerializableConfiguration}
+import org.apache.hudi.common.config.{ConfigProperty, HoodieConfig, HoodieMetadataConfig, SerializableConfiguration}
+import org.apache.hudi.common.config.HoodieReaderConfig.USE_NATIVE_HFILE_READER
 import org.apache.hudi.common.fs.FSUtils
 import org.apache.hudi.common.fs.FSUtils.getRelativePartitionPath
 import org.apache.hudi.common.model.{FileSlice, HoodieFileFormat, HoodieRecord}
-import org.apache.hudi.common.table.timeline.{HoodieTimeline, TimelineUtils}
-import org.apache.hudi.common.table.timeline.TimelineUtils.{HollowCommitHandling, validateTimestampAsOf, handleHollowCommitIfNeeded}
-import org.apache.hudi.common.table.view.HoodieTableFileSystemView
+import org.apache.hudi.common.model.HoodieFileFormat.HFILE
+import org.apache.hudi.common.model.HoodieRecord.HoodieRecordType
 import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient, TableSchemaResolver}
+import org.apache.hudi.common.table.timeline.HoodieTimeline
+import org.apache.hudi.common.table.timeline.TimelineUtils.validateTimestampAsOf
+import org.apache.hudi.common.table.view.HoodieTableFileSystemView
+import org.apache.hudi.common.util.{ConfigUtils, StringUtils}
 import org.apache.hudi.common.util.StringUtils.isNullOrEmpty
 import org.apache.hudi.common.util.ValidationUtils.checkState
-import org.apache.hudi.common.util.{ConfigUtils, StringUtils}
 import org.apache.hudi.config.HoodieBootstrapConfig.DATA_QUERIES_ONLY
 import org.apache.hudi.config.HoodieWriteConfig
-import org.apache.hudi.hadoop.CachingPath
+import org.apache.hudi.exception.HoodieException
+import org.apache.hudi.hadoop.fs.CachingPath
+import org.apache.hudi.internal.schema.{HoodieSchemaException, InternalSchema}
 import org.apache.hudi.internal.schema.convert.AvroInternalSchemaConverter
 import org.apache.hudi.internal.schema.utils.{InternalSchemaUtils, SerDeHelper}
-import org.apache.hudi.internal.schema.{HoodieSchemaException, InternalSchema}
-import org.apache.hudi.io.storage.HoodieAvroHFileReader
+import org.apache.hudi.io.storage.HoodieFileReaderFactory
 import org.apache.hudi.metadata.HoodieTableMetadata
+
+import org.apache.avro.Schema
+import org.apache.avro.generic.GenericRecord
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{FileStatus, Path}
+import org.apache.hadoop.mapred.JobConf
 import org.apache.spark.execution.datasources.HoodieInMemoryFileIndex
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.{Row, SparkSession, SQLContext}
 import org.apache.spark.sql.HoodieCatalystExpressionUtils.{convertToCatalystExpression, generateUnsafeProjection}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.Resolver
@@ -61,12 +66,10 @@ import org.apache.spark.sql.execution.datasources.parquet.{LegacyHoodieParquetFi
 import org.apache.spark.sql.hudi.HoodieSqlCommonUtils
 import org.apache.spark.sql.sources.{BaseRelation, Filter, PrunedFilteredScan}
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.{Row, SQLContext, SparkSession}
-import org.apache.spark.unsafe.types.UTF8String
 
 import java.net.URI
+
 import scala.collection.JavaConverters._
-import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 trait HoodieFileSplit {}
@@ -173,9 +176,7 @@ abstract class HoodieBaseRelation(val sqlContext: SQLContext,
     } getOrElse {
       Try(schemaResolver.getTableAvroSchema) match {
         case Success(schema) => schema
-        case Failure(e) =>
-          logError("Failed to fetch schema from the table", e)
-          throw new HoodieSchemaException("Failed to fetch schema from the table")
+        case Failure(e) => throw e
       }
     }
 
@@ -423,7 +424,8 @@ abstract class HoodieBaseRelation(val sqlContext: SQLContext,
           inMemoryFileIndex.listFiles(partitionFilters, dataFilters)
         }
 
-        val fsView = new HoodieTableFileSystemView(metaClient, timeline, partitionDirs.flatMap(_.files).toArray)
+        val fsView = new HoodieTableFileSystemView(
+          metaClient, timeline, sparkAdapter.getSparkPartitionedFileUtils.toFileStatuses(partitionDirs).toArray)
 
         fsView.getPartitionPaths.asScala.flatMap { partitionPath =>
           val relativePath = getRelativePartitionPath(basePath, partitionPath)
@@ -480,34 +482,31 @@ abstract class HoodieBaseRelation(val sqlContext: SQLContext,
   protected def getPartitionColumnsAsInternalRow(file: FileStatus): InternalRow =
     getPartitionColumnsAsInternalRowInternal(file, metaClient.getBasePathV2, shouldExtractPartitionValuesFromPartitionPath)
 
+  protected def getPartitionColumnValuesAsInternalRow(file: FileStatus): InternalRow =
+    getPartitionColumnsAsInternalRowInternal(file, metaClient.getBasePathV2, extractPartitionValuesFromPartitionPath = true)
+
   protected def getPartitionColumnsAsInternalRowInternal(file: FileStatus, basePath: Path,
                                                          extractPartitionValuesFromPartitionPath: Boolean): InternalRow = {
-    try {
-      val tableConfig = metaClient.getTableConfig
-      if (extractPartitionValuesFromPartitionPath) {
-        val tablePathWithoutScheme = CachingPath.getPathWithoutSchemeAndAuthority(basePath)
-        val partitionPathWithoutScheme = CachingPath.getPathWithoutSchemeAndAuthority(file.getPath.getParent)
-        val relativePath = new URI(tablePathWithoutScheme.toString).relativize(new URI(partitionPathWithoutScheme.toString)).toString
-        val hiveStylePartitioningEnabled = tableConfig.getHiveStylePartitioningEnable.toBoolean
-        if (hiveStylePartitioningEnabled) {
-          val partitionSpec = PartitioningUtils.parsePathFragment(relativePath)
-          InternalRow.fromSeq(partitionColumns.map(partitionSpec(_)).map(UTF8String.fromString))
-        } else {
-          if (partitionColumns.length == 1) {
-            InternalRow.fromSeq(Seq(UTF8String.fromString(relativePath)))
-          } else {
-            val parts = relativePath.split("/")
-            assert(parts.size == partitionColumns.length)
-            InternalRow.fromSeq(parts.map(UTF8String.fromString))
-          }
-        }
-      } else {
-        InternalRow.empty
+    if (extractPartitionValuesFromPartitionPath) {
+      val tablePathWithoutScheme = CachingPath.getPathWithoutSchemeAndAuthority(basePath)
+      val partitionPathWithoutScheme = CachingPath.getPathWithoutSchemeAndAuthority(file.getPath.getParent)
+      val relativePath = new URI(tablePathWithoutScheme.toString).relativize(new URI(partitionPathWithoutScheme.toString)).toString
+      val timeZoneId = conf.get("timeZone", sparkSession.sessionState.conf.sessionLocalTimeZone)
+      val rowValues = HoodieSparkUtils.parsePartitionColumnValues(
+        partitionColumns,
+        relativePath,
+        basePath,
+        tableStructSchema,
+        timeZoneId,
+        sparkAdapter.getSparkParsePartitionUtil,
+        conf.getBoolean("spark.sql.sources.validatePartitionColumns", true))
+      if(rowValues.length != partitionColumns.length) {
+        throw new HoodieException("Failed to get partition column values from the partition-path:"
+            + s"partition column size: ${partitionColumns.length}, parsed partition value size: ${rowValues.length}")
       }
-    } catch {
-      case NonFatal(e) =>
-        logWarning(s"Failed to get the right partition InternalRow for file: ${file.toString}", e)
-        InternalRow.empty
+      InternalRow.fromSeq(rowValues)
+    } else {
+      InternalRow.empty
     }
   }
 
@@ -521,6 +520,99 @@ abstract class HoodieBaseRelation(val sqlContext: SQLContext,
    */
   def updatePrunedDataSchema(prunedSchema: StructType): Relation
 
+  protected def createBaseFileReaders(tableSchema: HoodieTableSchema,
+                                      requiredSchema: HoodieTableSchema,
+                                      requestedColumns: Array[String],
+                                      requiredFilters: Seq[Filter],
+                                      optionalFilters: Seq[Filter] = Seq.empty,
+                                      baseFileFormat: HoodieFileFormat = tableConfig.getBaseFileFormat): HoodieMergeOnReadBaseFileReaders = {
+    val (partitionSchema, dataSchema, requiredDataSchema) =
+      tryPrunePartitionColumns(tableSchema, requiredSchema)
+
+    val fullSchemaReader = createBaseFileReader(
+      spark = sqlContext.sparkSession,
+      partitionSchema = partitionSchema,
+      dataSchema = dataSchema,
+      requiredDataSchema = dataSchema,
+      // This file-reader is used to read base file records, subsequently merging them with the records
+      // stored in delta-log files. As such, we have to read _all_ records from the base file, while avoiding
+      // applying any filtering _before_ we complete combining them w/ delta-log records (to make sure that
+      // we combine them correctly);
+      // As such only required filters could be pushed-down to such reader
+      filters = requiredFilters,
+      options = optParams,
+      // NOTE: We have to fork the Hadoop Config here as Spark will be modifying it
+      //       to configure Parquet reader appropriately
+      hadoopConf = embedInternalSchema(new Configuration(conf), internalSchemaOpt),
+      baseFileFormat = baseFileFormat
+    )
+
+    val requiredSchemaReader = createBaseFileReader(
+      spark = sqlContext.sparkSession,
+      partitionSchema = partitionSchema,
+      dataSchema = dataSchema,
+      requiredDataSchema = requiredDataSchema,
+      // This file-reader is used to read base file records, subsequently merging them with the records
+      // stored in delta-log files. As such, we have to read _all_ records from the base file, while avoiding
+      // applying any filtering _before_ we complete combining them w/ delta-log records (to make sure that
+      // we combine them correctly);
+      // As such only required filters could be pushed-down to such reader
+      filters = requiredFilters,
+      options = optParams,
+      // NOTE: We have to fork the Hadoop Config here as Spark will be modifying it
+      //       to configure Parquet reader appropriately
+      hadoopConf = embedInternalSchema(new Configuration(conf), requiredDataSchema.internalSchema),
+      baseFileFormat = baseFileFormat
+    )
+
+    // Check whether fields required for merging were also requested to be fetched
+    // by the query:
+    //    - In case they were, there's no optimization we could apply here (we will have
+    //    to fetch such fields)
+    //    - In case they were not, we will provide 2 separate file-readers
+    //        a) One which would be applied to file-groups w/ delta-logs (merging)
+    //        b) One which would be applied to file-groups w/ no delta-logs or
+    //           in case query-mode is skipping merging
+    val mandatoryColumns = mandatoryFields.map(HoodieAvroUtils.getRootLevelFieldName)
+    if (mandatoryColumns.forall(requestedColumns.contains)) {
+      HoodieMergeOnReadBaseFileReaders(
+        fullSchemaReader = fullSchemaReader,
+        requiredSchemaReader = requiredSchemaReader,
+        requiredSchemaReaderSkipMerging = requiredSchemaReader
+      )
+    } else {
+      val prunedRequiredSchema = {
+        val unusedMandatoryColumnNames = mandatoryColumns.filterNot(requestedColumns.contains)
+        val prunedStructSchema =
+          StructType(requiredDataSchema.structTypeSchema.fields
+            .filterNot(f => unusedMandatoryColumnNames.contains(f.name)))
+
+        HoodieTableSchema(prunedStructSchema, convertToAvroSchema(prunedStructSchema, tableName).toString)
+      }
+
+      val requiredSchemaReaderSkipMerging = createBaseFileReader(
+        spark = sqlContext.sparkSession,
+        partitionSchema = partitionSchema,
+        dataSchema = dataSchema,
+        requiredDataSchema = prunedRequiredSchema,
+        // This file-reader is only used in cases when no merging is performed, therefore it's safe to push
+        // down these filters to the base file readers
+        filters = requiredFilters ++ optionalFilters,
+        options = optParams,
+        // NOTE: We have to fork the Hadoop Config here as Spark will be modifying it
+        //       to configure Parquet reader appropriately
+        hadoopConf = embedInternalSchema(new Configuration(conf), requiredDataSchema.internalSchema),
+        baseFileFormat = baseFileFormat
+      )
+
+      HoodieMergeOnReadBaseFileReaders(
+        fullSchemaReader = fullSchemaReader,
+        requiredSchemaReader = requiredSchemaReader,
+        requiredSchemaReaderSkipMerging = requiredSchemaReaderSkipMerging
+      )
+    }
+  }
+
   /**
    * Returns file-reader routine accepting [[PartitionedFile]] and returning an [[Iterator]]
    * over [[InternalRow]]
@@ -532,16 +624,15 @@ abstract class HoodieBaseRelation(val sqlContext: SQLContext,
                                      filters: Seq[Filter],
                                      options: Map[String, String],
                                      hadoopConf: Configuration,
-                                     shouldAppendPartitionValuesOverride: Option[Boolean] = None): BaseFileReader = {
-    val tableBaseFileFormat = tableConfig.getBaseFileFormat
-
+                                     shouldAppendPartitionValuesOverride: Option[Boolean] = None,
+                                     baseFileFormat: HoodieFileFormat = tableConfig.getBaseFileFormat): BaseFileReader = {
     // NOTE: PLEASE READ CAREFULLY
     //       Lambda returned from this method is going to be invoked on the executor, and therefore
     //       we have to eagerly initialize all of the readers even though only one specific to the type
     //       of the file being read will be used. This is required to avoid serialization of the whole
     //       relation (containing file-index for ex) and passing it to the executor
     val (read: (PartitionedFile => Iterator[InternalRow]), schema: StructType) =
-      tableBaseFileFormat match {
+      baseFileFormat match {
         case HoodieFileFormat.PARQUET =>
           val parquetReader = HoodieDataSourceHelper.buildHoodieParquetReader(
             sparkSession = spark,
@@ -576,17 +667,17 @@ abstract class HoodieBaseRelation(val sqlContext: SQLContext,
 
         (hfileReader, requiredDataSchema.structTypeSchema)
 
-      case _ => throw new UnsupportedOperationException(s"Base file format is not currently supported ($tableBaseFileFormat)")
+      case _ => throw new UnsupportedOperationException(s"Base file format is not currently supported ($baseFileFormat)")
     }
 
     BaseFileReader(
       read = partitionedFile => {
         val filePathString = sparkAdapter.getSparkPartitionedFileUtils.getStringPathFromPartitionedFile(partitionedFile)
         val extension = FSUtils.getFileExtension(filePathString)
-        if (tableBaseFileFormat.getFileExtension.equals(extension)) {
+        if (baseFileFormat.getFileExtension.equals(extension)) {
           read(partitionedFile)
         } else {
-          throw new UnsupportedOperationException(s"Invalid base-file format ($extension), expected ($tableBaseFileFormat)")
+          throw new UnsupportedOperationException(s"Invalid base-file format ($extension), expected ($baseFileFormat)")
         }
       },
       schema = schema
@@ -626,13 +717,26 @@ abstract class HoodieBaseRelation(val sqlContext: SQLContext,
     if (extractPartitionValuesFromPartitionPath) {
       val partitionSchema = filterInPartitionColumns(tableSchema.structTypeSchema)
       val prunedDataStructSchema = prunePartitionColumns(tableSchema.structTypeSchema)
-      val prunedRequiredSchema = prunePartitionColumns(requiredSchema.structTypeSchema)
+      val prunedDataInternalSchema = pruneInternalSchema(tableSchema, prunedDataStructSchema)
+      val prunedRequiredStructSchema = prunePartitionColumns(requiredSchema.structTypeSchema)
+      val prunedRequiredInternalSchema = pruneInternalSchema(requiredSchema, prunedRequiredStructSchema)
 
       (partitionSchema,
-        HoodieTableSchema(prunedDataStructSchema, convertToAvroSchema(prunedDataStructSchema, tableName).toString),
-        HoodieTableSchema(prunedRequiredSchema, convertToAvroSchema(prunedRequiredSchema, tableName).toString))
+        HoodieTableSchema(prunedDataStructSchema,
+          convertToAvroSchema(prunedDataStructSchema, tableName).toString, prunedDataInternalSchema),
+        HoodieTableSchema(prunedRequiredStructSchema,
+          convertToAvroSchema(prunedRequiredStructSchema, tableName).toString, prunedRequiredInternalSchema))
     } else {
       (StructType(Nil), tableSchema, requiredSchema)
+    }
+  }
+
+  private def pruneInternalSchema(hoodieTableSchema: HoodieTableSchema, prunedStructSchema: StructType): Option[InternalSchema] = {
+    if (hoodieTableSchema.internalSchema.isEmpty || hoodieTableSchema.internalSchema.get.isEmptySchema) {
+      Option.empty[InternalSchema]
+    } else {
+      Some(InternalSchemaUtils.pruneInternalSchema(hoodieTableSchema.internalSchema.get,
+        prunedStructSchema.fields.map(_.name).toList.asJava))
     }
   }
 
@@ -744,7 +848,11 @@ object HoodieBaseRelation extends SparkAdapterSupport {
     partitionedFile => {
       val hadoopConf = hadoopConfBroadcast.value.get()
       val filePath = sparkAdapter.getSparkPartitionedFileUtils.getPathFromPartitionedFile(partitionedFile)
-      val reader = new HoodieAvroHFileReader(hadoopConf, filePath, new CacheConfig(hadoopConf))
+      val hoodieConfig = new HoodieConfig()
+      hoodieConfig.setValue(USE_NATIVE_HFILE_READER,
+        options.getOrElse(USE_NATIVE_HFILE_READER.key(), USE_NATIVE_HFILE_READER.defaultValue().toString))
+      val reader = HoodieFileReaderFactory.getReaderFactory(HoodieRecordType.AVRO)
+        .getFileReader(hoodieConfig, hadoopConf, filePath, HFILE)
 
       val requiredRowSchema = requiredDataSchema.structTypeSchema
       // NOTE: Schema has to be parsed at this point, since Avro's [[Schema]] aren't serializable

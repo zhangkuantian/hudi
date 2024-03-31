@@ -73,6 +73,7 @@ import static org.apache.hudi.avro.HoodieAvroUtils.getNestedFieldSchemaFromWrite
 import static org.apache.hudi.avro.HoodieAvroUtils.sanitizeName;
 import static org.apache.hudi.avro.HoodieAvroUtils.unwrapAvroValueWrapper;
 import static org.apache.hudi.avro.HoodieAvroUtils.wrapValueIntoAvro;
+import static org.apache.hudi.common.util.StringUtils.getUTF8Bytes;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -97,6 +98,12 @@ public class TestHoodieAvroUtils {
       + "{\"name\": \"timestamp\",\"type\": \"double\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
       + "{\"name\": \"non_pii_col\", \"type\": \"string\"},"
       + "{\"name\": \"pii_col\", \"type\": \"string\", \"column_category\": \"user_profile\"}]}";
+
+  private static final String EXAMPLE_SCHEMA_WITH_PROPS = "{\"type\": \"record\",\"name\": \"testrec\",\"fields\": [ "
+      + "{\"name\": \"timestamp\",\"type\": \"double\", \"custom_field_property\":\"value\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
+      + "{\"name\": \"non_pii_col\", \"type\": \"string\"},"
+      + "{\"name\": \"pii_col\", \"type\": \"string\", \"column_category\": \"user_profile\"}], "
+      + "\"custom_schema_property\": \"custom_schema_property_value\"}";
 
   private static int NUM_FIELDS_IN_EXAMPLE_SCHEMA = 4;
 
@@ -294,7 +301,7 @@ public class TestHoodieAvroUtils {
     // partitioned table test.
     String schemaStr = "{\"type\": \"record\",\"name\": \"testrec\",\"fields\": [ "
         + "{\"name\": \"timestamp\",\"type\": \"double\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
-        + "{\"name\": \"non_pii_col\", \"type\": \"string\"}]},";
+        + "{\"name\": \"non_pii_col\", \"type\": \"string\"}]}";
     Schema expectedSchema = new Schema.Parser().parse(schemaStr);
     GenericRecord rec = new GenericData.Record(new Schema.Parser().parse(EXAMPLE_SCHEMA));
     rec.put("_row_key", "key1");
@@ -317,7 +324,7 @@ public class TestHoodieAvroUtils {
     schemaStr = "{\"type\": \"record\",\"name\": \"testrec\",\"fields\": [ "
         + "{\"name\": \"timestamp\",\"type\": \"double\"},{\"name\": \"_row_key\", \"type\": \"string\"},"
         + "{\"name\": \"non_pii_col\", \"type\": \"string\"},"
-        + "{\"name\": \"pii_col\", \"type\": \"string\"}]},";
+        + "{\"name\": \"pii_col\", \"type\": \"string\"}]}";
     expectedSchema = new Schema.Parser().parse(schemaStr);
     rec1 = HoodieAvroUtils.removeFields(rec, Collections.singleton(""));
     assertEquals(expectedSchema, rec1.getSchema());
@@ -522,7 +529,7 @@ public class TestHoodieAvroUtils {
     expectedWrapperClass.put("bytesField", BytesWrapper.class);
     record.put("stringField", "abcdefghijk");
     expectedWrapperClass.put("stringField", StringWrapper.class);
-    record.put("decimalField", ByteBuffer.wrap("9213032.4966".getBytes()));
+    record.put("decimalField", ByteBuffer.wrap(getUTF8Bytes("9213032.4966")));
     expectedWrapperClass.put("decimalField", BytesWrapper.class);
     record.put("timeMillisField", 57996136);
     expectedWrapperClass.put("timeMillisField", IntWrapper.class);
@@ -602,5 +609,24 @@ public class TestHoodieAvroUtils {
           ((BigDecimal) value)
               .subtract((BigDecimal) unwrapAvroValueWrapper(wrapperValue)).toPlainString());
     }
+  }
+
+  @Test
+  public void testAddMetadataFields() {
+    Schema baseSchema = new Schema.Parser().parse(EXAMPLE_SCHEMA_WITH_PROPS);
+    Schema schemaWithMetadata = HoodieAvroUtils.addMetadataFields(baseSchema);
+    List<Schema.Field> updatedFields = schemaWithMetadata.getFields();
+    // assert fields added in expected order
+    assertEquals(HoodieRecord.COMMIT_TIME_METADATA_FIELD, updatedFields.get(0).name());
+    assertEquals(HoodieRecord.COMMIT_SEQNO_METADATA_FIELD, updatedFields.get(1).name());
+    assertEquals(HoodieRecord.RECORD_KEY_METADATA_FIELD, updatedFields.get(2).name());
+    assertEquals(HoodieRecord.PARTITION_PATH_METADATA_FIELD, updatedFields.get(3).name());
+    assertEquals(HoodieRecord.FILENAME_METADATA_FIELD, updatedFields.get(4).name());
+    // assert original fields are copied over
+    List<Schema.Field> originalFieldsInUpdatedSchema = updatedFields.subList(5, updatedFields.size());
+    assertEquals(baseSchema.getFields(), originalFieldsInUpdatedSchema);
+    // validate properties are properly copied over
+    assertEquals("custom_schema_property_value", schemaWithMetadata.getProp("custom_schema_property"));
+    assertEquals("value", originalFieldsInUpdatedSchema.get(0).getProp("custom_field_property"));
   }
 }

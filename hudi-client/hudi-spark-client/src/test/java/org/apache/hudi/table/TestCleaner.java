@@ -22,13 +22,17 @@ import org.apache.hudi.avro.model.HoodieActionInstant;
 import org.apache.hudi.avro.model.HoodieCleanMetadata;
 import org.apache.hudi.avro.model.HoodieCleanPartitionMetadata;
 import org.apache.hudi.avro.model.HoodieCleanerPlan;
+import org.apache.hudi.avro.model.HoodieClusteringGroup;
+import org.apache.hudi.avro.model.HoodieClusteringPlan;
+import org.apache.hudi.avro.model.HoodieClusteringStrategy;
 import org.apache.hudi.avro.model.HoodieRequestedReplaceMetadata;
 import org.apache.hudi.avro.model.HoodieRollbackMetadata;
-import org.apache.hudi.client.HoodieTimelineArchiver;
+import org.apache.hudi.avro.model.HoodieSliceInfo;
 import org.apache.hudi.client.SparkRDDReadClient;
 import org.apache.hudi.client.SparkRDDWriteClient;
 import org.apache.hudi.client.WriteStatus;
 import org.apache.hudi.client.common.HoodieSparkEngineContext;
+import org.apache.hudi.client.timeline.HoodieTimelineArchiver;
 import org.apache.hudi.common.HoodieCleanStat;
 import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.fs.ConsistencyGuardConfig;
@@ -40,6 +44,7 @@ import org.apache.hudi.common.model.HoodieFileFormat;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieReplaceCommitMetadata;
 import org.apache.hudi.common.model.HoodieTableType;
+import org.apache.hudi.common.model.HoodieWriteStat;
 import org.apache.hudi.common.model.IOType;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
@@ -60,6 +65,7 @@ import org.apache.hudi.common.testutils.HoodieTestUtils;
 import org.apache.hudi.common.util.CleanerUtils;
 import org.apache.hudi.common.util.CollectionUtils;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.config.HoodieArchivalConfig;
 import org.apache.hudi.config.HoodieCleanConfig;
@@ -72,7 +78,6 @@ import org.apache.hudi.metadata.SparkHoodieBackedTableMetadataWriter;
 import org.apache.hudi.table.action.clean.CleanPlanner;
 import org.apache.hudi.testutils.HoodieCleanerTestBase;
 
-import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.Path;
 import org.apache.spark.api.java.JavaRDD;
 import org.junit.jupiter.api.Test;
@@ -80,6 +85,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -95,6 +101,7 @@ import java.util.stream.Stream;
 
 import scala.Tuple3;
 
+import static org.apache.hudi.HoodieTestCommitGenerator.getBaseFilename;
 import static org.apache.hudi.common.testutils.HoodieTestDataGenerator.NO_PARTITION_PATH;
 import static org.apache.hudi.common.testutils.HoodieTestTable.makeNewCommitTime;
 import static org.apache.hudi.common.testutils.HoodieTestUtils.DEFAULT_PARTITION_PATHS;
@@ -300,7 +307,7 @@ public class TestCleaner extends HoodieCleanerTestBase {
       String earliestInstantToRetain = "";
 
       for (int idx = 0; idx < 3; ++idx) {
-        instantTime = HoodieActiveTimeline.createNewInstantTime();
+        instantTime = client.createNewInstantTime();
         if (idx == 2) {
           earliestInstantToRetain = instantTime;
         }
@@ -310,7 +317,7 @@ public class TestCleaner extends HoodieCleanerTestBase {
       }
 
 
-      instantTime = HoodieActiveTimeline.createNewInstantTime();
+      instantTime = client.createNewInstantTime();
       HoodieTable table = HoodieSparkTable.create(writeConfig, context);
       Option<HoodieCleanerPlan> cleanPlan = table.scheduleCleaning(context, instantTime, Option.empty());
       assertEquals(cleanPlan.get().getFilePathsToBeDeletedPerPartition().get(partition1).size(), 1);
@@ -320,14 +327,14 @@ public class TestCleaner extends HoodieCleanerTestBase {
       table.clean(context, instantTime);
 
 
-      instantTime = HoodieActiveTimeline.createNewInstantTime();
+      instantTime = client.createNewInstantTime();
       List<HoodieRecord> records = dataGen.generateInsertsForPartition(instantTime, 1, partition1);
       client.startCommitWithTime(instantTime);
       JavaRDD<HoodieRecord> recordsRDD = jsc.parallelize(records, 1);
       client.insert(recordsRDD, instantTime).collect();
 
 
-      instantTime = HoodieActiveTimeline.createNewInstantTime();
+      instantTime = client.createNewInstantTime();
       earliestInstantToRetain = instantTime;
       List<HoodieRecord> updatedRecords = dataGen.generateUpdates(instantTime, records);
       JavaRDD<HoodieRecord> updatedRecordsRDD = jsc.parallelize(updatedRecords, 1);
@@ -341,14 +348,14 @@ public class TestCleaner extends HoodieCleanerTestBase {
       String compactionInstantTime = client.scheduleCompaction(Option.empty()).get().toString();
 
       for (int idx = 0; idx < 3; ++idx) {
-        instantTime = HoodieActiveTimeline.createNewInstantTime();
+        instantTime = client.createNewInstantTime();
         records = dataGen.generateInsertsForPartition(instantTime, 1, partition2);
         client.startCommitWithTime(instantTime);
         client.insert(jsc.parallelize(records, 1), instantTime).collect();
       }
 
       // earliest commit to retain should be earlier than first pending compaction in incremental cleaning scenarios.
-      instantTime = HoodieActiveTimeline.createNewInstantTime();
+      instantTime = client.createNewInstantTime();
       cleanPlan = table.scheduleCleaning(context, instantTime, Option.empty());
       assertEquals(earliestInstantToRetain,cleanPlan.get().getEarliestInstantToRetain().getTimestamp());
     }
@@ -379,13 +386,13 @@ public class TestCleaner extends HoodieCleanerTestBase {
     try (SparkRDDWriteClient client = new SparkRDDWriteClient(context, writeConfig)) {
       String instantTime;
       for (int idx = 0; idx < 3; ++idx) {
-        instantTime = HoodieActiveTimeline.createNewInstantTime();
+        instantTime = client.createNewInstantTime();
         List<HoodieRecord> records = dataGen.generateInserts(instantTime, 1);
         client.startCommitWithTime(instantTime);
         client.insert(jsc.parallelize(records, 1), instantTime).collect();
       }
 
-      instantTime = HoodieActiveTimeline.createNewInstantTime();
+      instantTime = client.createNewInstantTime();
       HoodieTable table = HoodieSparkTable.create(writeConfig, context);
       Option<HoodieCleanerPlan> cleanPlan = table.scheduleCleaning(context, instantTime, Option.empty());
       assertEquals(cleanPlan.get().getPartitionsToBeDeleted().size(), 0);
@@ -544,7 +551,7 @@ public class TestCleaner extends HoodieCleanerTestBase {
     HoodieWriteConfig config =
         HoodieWriteConfig.newBuilder()
             .withPath(basePath)
-            .withMetadataConfig(HoodieMetadataConfig.newBuilder().withAssumeDatePartitioning(true).build())
+            .withMetadataConfig(HoodieMetadataConfig.newBuilder().build())
             .withCleanConfig(HoodieCleanConfig.newBuilder()
                 .withCleanerPolicy(HoodieCleaningPolicy.KEEP_LATEST_COMMITS).build())
             .build();
@@ -563,131 +570,163 @@ public class TestCleaner extends HoodieCleanerTestBase {
     int instantClean = startInstant;
 
     HoodieTestTable testTable = HoodieTestTable.of(metaClient);
-    HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context);
-    for (int i = 0; i < commitCount; i++, startInstant++) {
-      String commitTime = makeNewCommitTime(startInstant, "%09d");
-      commitWithMdt(commitTime, Collections.emptyMap(), testTable, metadataWriter);
+    try (HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context)) {
+      for (int i = 0; i < commitCount; i++, startInstant++) {
+        String commitTime = makeNewCommitTime(startInstant, "%09d");
+        commitWithMdt(commitTime, Collections.emptyMap(), testTable, metadataWriter);
+      }
+
+      List<HoodieCleanStat> cleanStats = runCleaner(config);
+      HoodieActiveTimeline timeline = metaClient.reloadActiveTimeline();
+
+      assertEquals(0, cleanStats.size(), "Must not clean any files");
+      assertEquals(1, timeline.getTimelineOfActions(
+          CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflightsAndRequested().countInstants());
+      assertEquals(0, timeline.getTimelineOfActions(
+          CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflights().countInstants());
+      assertEquals(--cleanCount, timeline.getTimelineOfActions(
+          CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterCompletedInstants().countInstants());
+      assertTrue(timeline.getTimelineOfActions(
+          CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflightsAndRequested().containsInstant(makeNewCommitTime(--instantClean, "%09d")));
+
+      cleanStats = runCleaner(config);
+      timeline = metaClient.reloadActiveTimeline();
+
+      assertEquals(0, cleanStats.size(), "Must not clean any files");
+      assertEquals(1, timeline.getTimelineOfActions(
+          CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflightsAndRequested().countInstants());
+      assertEquals(0, timeline.getTimelineOfActions(
+          CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflights().countInstants());
+      assertEquals(--cleanCount, timeline.getTimelineOfActions(
+          CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterCompletedInstants().countInstants());
+      assertTrue(timeline.getTimelineOfActions(
+          CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflightsAndRequested().containsInstant(makeNewCommitTime(--instantClean, "%09d")));
     }
-
-    List<HoodieCleanStat> cleanStats = runCleaner(config);
-    HoodieActiveTimeline timeline = metaClient.reloadActiveTimeline();
-
-    assertEquals(0, cleanStats.size(), "Must not clean any files");
-    assertEquals(1, timeline.getTimelineOfActions(
-        CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflightsAndRequested().countInstants());
-    assertEquals(0, timeline.getTimelineOfActions(
-        CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflights().countInstants());
-    assertEquals(--cleanCount, timeline.getTimelineOfActions(
-        CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterCompletedInstants().countInstants());
-    assertTrue(timeline.getTimelineOfActions(
-        CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflightsAndRequested().containsInstant(makeNewCommitTime(--instantClean, "%09d")));
-
-    cleanStats = runCleaner(config);
-    timeline = metaClient.reloadActiveTimeline();
-
-    assertEquals(0, cleanStats.size(), "Must not clean any files");
-    assertEquals(1, timeline.getTimelineOfActions(
-        CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflightsAndRequested().countInstants());
-    assertEquals(0, timeline.getTimelineOfActions(
-        CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflights().countInstants());
-    assertEquals(--cleanCount, timeline.getTimelineOfActions(
-        CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterCompletedInstants().countInstants());
-    assertTrue(timeline.getTimelineOfActions(
-        CollectionUtils.createSet(HoodieTimeline.CLEAN_ACTION)).filterInflightsAndRequested().containsInstant(makeNewCommitTime(--instantClean, "%09d")));
   }
 
   @Test
   public void testCleanWithReplaceCommits() throws Exception {
     HoodieWriteConfig config = HoodieWriteConfig.newBuilder().withPath(basePath)
         .withMetadataConfig(HoodieMetadataConfig.newBuilder()
-            .withMaxNumDeltaCommitsBeforeCompaction(1)
-            .withAssumeDatePartitioning(true).build())
+            .withMaxNumDeltaCommitsBeforeCompaction(1).build())
         .withCleanConfig(HoodieCleanConfig.newBuilder()
             .withCleanerPolicy(HoodieCleaningPolicy.KEEP_LATEST_COMMITS)
             .retainCommits(2).build())
         .build();
 
-    HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context);
-    HoodieTestTable testTable = HoodieMetadataTestTable.of(metaClient, metadataWriter, Option.of(context));
-    String p0 = "2020/01/01";
-    String p1 = "2020/01/02";
+    try (HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context)) {
+      HoodieTestTable testTable = HoodieMetadataTestTable.of(metaClient, metadataWriter, Option.of(context));
+      String p0 = "2020/01/01";
+      String p1 = "2020/01/02";
 
-    // make 1 commit, with 1 file per partition
-    String file1P0C0 = UUID.randomUUID().toString();
-    String file1P1C0 = UUID.randomUUID().toString();
-    Map<String, List<String>> part1ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
-      {
-        put(p0, CollectionUtils.createImmutableList(file1P0C0));
-        put(p1, CollectionUtils.createImmutableList(file1P1C0));
-      }
-    });
-    commitWithMdt("00000000000001", part1ToFileId, testTable, metadataWriter, true, true);
-    metaClient = HoodieTableMetaClient.reload(metaClient);
+      // make 1 commit, with 1 file per partition
+      String file1P0C0 = UUID.randomUUID().toString();
+      String file1P1C0 = UUID.randomUUID().toString();
+      Map<String, List<String>> part1ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
+        {
+          put(p0, CollectionUtils.createImmutableList(file1P0C0));
+          put(p1, CollectionUtils.createImmutableList(file1P1C0));
+        }
+      });
+      commitWithMdt("00000000000001", part1ToFileId, testTable, metadataWriter, true, true);
+      metaClient = HoodieTableMetaClient.reload(metaClient);
 
-    List<HoodieCleanStat> hoodieCleanStatsOne = runCleanerWithInstantFormat(config, true);
-    assertEquals(0, hoodieCleanStatsOne.size(), "Must not scan any partitions and clean any files");
-    assertTrue(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
-    assertTrue(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
+      List<HoodieCleanStat> hoodieCleanStatsOne = runCleanerWithInstantFormat(config, true);
+      assertEquals(0, hoodieCleanStatsOne.size(), "Must not scan any partitions and clean any files");
+      assertTrue(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
+      assertTrue(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
 
-    // make next replacecommit, with 1 clustering operation. logically delete p0. No change to p1
-    // notice that clustering generates empty inflight commit files
-    Map<String, String> partitionAndFileId002 = testTable.forReplaceCommit("00000000000002").getFileIdsWithBaseFilesInPartitions(p0);
-    String file2P0C1 = partitionAndFileId002.get(p0);
-    Pair<HoodieRequestedReplaceMetadata, HoodieReplaceCommitMetadata> replaceMetadata =
-        generateReplaceCommitMetadata("00000000000002", p0, file1P0C0, file2P0C1);
-    testTable.addReplaceCommit("00000000000002", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
+      // make next replacecommit, with 1 clustering operation. logically delete p0. No change to p1
+      // notice that clustering generates empty inflight commit files
+      Map<String, String> partitionAndFileId002 = testTable.forReplaceCommit("00000000000002").getFileIdsWithBaseFilesInPartitions(p0);
+      String file2P0C1 = partitionAndFileId002.get(p0);
+      Pair<HoodieRequestedReplaceMetadata, HoodieReplaceCommitMetadata> replaceMetadata =
+          generateReplaceCommitMetadata("00000000000002", p0, file1P0C0, file2P0C1);
+      testTable.addReplaceCommit("00000000000002", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
 
-    // run cleaner
-    List<HoodieCleanStat> hoodieCleanStatsTwo = runCleanerWithInstantFormat(config, true);
-    assertEquals(0, hoodieCleanStatsTwo.size(), "Must not scan any partitions and clean any files");
-    assertTrue(testTable.baseFileExists(p0, "00000000000002", file2P0C1));
-    assertTrue(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
-    assertTrue(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
+      // run cleaner
+      List<HoodieCleanStat> hoodieCleanStatsTwo = runCleanerWithInstantFormat(config, true);
+      assertEquals(0, hoodieCleanStatsTwo.size(), "Must not scan any partitions and clean any files");
+      assertTrue(testTable.baseFileExists(p0, "00000000000002", file2P0C1));
+      assertTrue(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
+      assertTrue(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
 
-    // make next replacecommit, with 1 clustering operation. Replace data in p1. No change to p0
-    // notice that clustering generates empty inflight commit files
-    Map<String, String> partitionAndFileId003 = testTable.forReplaceCommit("00000000000003").getFileIdsWithBaseFilesInPartitions(p1);
-    String file3P1C2 = partitionAndFileId003.get(p1);
-    replaceMetadata = generateReplaceCommitMetadata("00000000000003", p1, file1P1C0, file3P1C2);
-    testTable.addReplaceCommit("00000000000003", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
+      // make next replacecommit, with 1 clustering operation. Replace data in p1. No change to p0
+      // notice that clustering generates empty inflight commit files
+      Map<String, String> partitionAndFileId003 = testTable.forReplaceCommit("00000000000003").getFileIdsWithBaseFilesInPartitions(p1);
+      String file3P1C2 = partitionAndFileId003.get(p1);
+      replaceMetadata = generateReplaceCommitMetadata("00000000000003", p1, file1P1C0, file3P1C2);
+      testTable.addReplaceCommit("00000000000003", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
 
-    // run cleaner
-    List<HoodieCleanStat> hoodieCleanStatsThree = runCleanerWithInstantFormat(config, true);
-    assertEquals(0, hoodieCleanStatsThree.size(), "Must not scan any partitions and clean any files");
-    assertTrue(testTable.baseFileExists(p0, "00000000000002", file2P0C1));
-    assertTrue(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
-    assertTrue(testTable.baseFileExists(p1, "00000000000003", file3P1C2));
-    assertTrue(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
+      // run cleaner
+      List<HoodieCleanStat> hoodieCleanStatsThree = runCleanerWithInstantFormat(config, true);
+      assertEquals(0, hoodieCleanStatsThree.size(), "Must not scan any partitions and clean any files");
+      assertTrue(testTable.baseFileExists(p0, "00000000000002", file2P0C1));
+      assertTrue(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
+      assertTrue(testTable.baseFileExists(p1, "00000000000003", file3P1C2));
+      assertTrue(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
 
-    // make next replacecommit, with 1 clustering operation. Replace data in p0 again
-    // notice that clustering generates empty inflight commit files
-    Map<String, String> partitionAndFileId004 = testTable.forReplaceCommit("00000000000004").getFileIdsWithBaseFilesInPartitions(p0);
-    String file4P0C3 = partitionAndFileId004.get(p0);
-    replaceMetadata = generateReplaceCommitMetadata("00000000000004", p0, file2P0C1, file4P0C3);
-    testTable.addReplaceCommit("00000000000004", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
+      // make next replacecommit, with 1 clustering operation. Replace data in p0 again
+      // notice that clustering generates empty inflight commit files
+      Map<String, String> partitionAndFileId004 = testTable.forReplaceCommit("00000000000004").getFileIdsWithBaseFilesInPartitions(p0);
+      String file4P0C3 = partitionAndFileId004.get(p0);
+      replaceMetadata = generateReplaceCommitMetadata("00000000000004", p0, file2P0C1, file4P0C3);
+      testTable.addReplaceCommit("00000000000004", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
 
-    // run cleaner
-    List<HoodieCleanStat> hoodieCleanStatsFour = runCleaner(config, 5, true);
-    assertTrue(testTable.baseFileExists(p0, "00000000000004", file4P0C3));
-    assertTrue(testTable.baseFileExists(p0, "00000000000002", file2P0C1));
-    assertTrue(testTable.baseFileExists(p1, "00000000000003", file3P1C2));
-    assertFalse(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
-    //file1P1C0 still stays because its not replaced until 3 and its the only version available
-    assertTrue(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
+      // run cleaner
+      List<HoodieCleanStat> hoodieCleanStatsFour = runCleaner(config, 5, true);
+      assertTrue(testTable.baseFileExists(p0, "00000000000004", file4P0C3));
+      assertTrue(testTable.baseFileExists(p0, "00000000000002", file2P0C1));
+      assertTrue(testTable.baseFileExists(p1, "00000000000003", file3P1C2));
+      assertFalse(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
+      //file1P1C0 still stays because its not replaced until 3 and its the only version available
+      assertTrue(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
 
-    // make next replacecommit, with 1 clustering operation. Replace all data in p1. no new files created
-    // notice that clustering generates empty inflight commit files
-    Map<String, String> partitionAndFileId005 = testTable.forReplaceCommit("00000000000006").getFileIdsWithBaseFilesInPartitions(p1);
-    String file4P1C4 = partitionAndFileId005.get(p1);
-    replaceMetadata = generateReplaceCommitMetadata("00000000000006", p0, file3P1C2, file4P1C4);
-    testTable.addReplaceCommit("00000000000006", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
+      // make next replacecommit, with 1 clustering operation. Replace all data in p1. no new files created
+      // notice that clustering generates empty inflight commit files
+      Map<String, String> partitionAndFileId005 = testTable.forReplaceCommit("00000000000006").getFileIdsWithBaseFilesInPartitions(p1);
+      String file4P1C4 = partitionAndFileId005.get(p1);
+      replaceMetadata = generateReplaceCommitMetadata("00000000000006", p0, file3P1C2, file4P1C4);
+      testTable.addReplaceCommit("00000000000006", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
 
-    List<HoodieCleanStat> hoodieCleanStatsFive = runCleaner(config, 7, true);
-    assertTrue(testTable.baseFileExists(p0, "00000000000004", file4P0C3));
-    assertTrue(testTable.baseFileExists(p0, "00000000000002", file2P0C1));
-    assertTrue(testTable.baseFileExists(p1, "00000000000003", file3P1C2));
-    assertFalse(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
-    assertFalse(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
+      List<HoodieCleanStat> hoodieCleanStatsFive = runCleaner(config, 7, true);
+      assertTrue(testTable.baseFileExists(p0, "00000000000004", file4P0C3));
+      assertTrue(testTable.baseFileExists(p0, "00000000000002", file2P0C1));
+      assertTrue(testTable.baseFileExists(p1, "00000000000003", file3P1C2));
+      assertFalse(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
+      assertFalse(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
+    }
+  }
+
+  private Pair<HoodieRequestedReplaceMetadata, HoodieReplaceCommitMetadata> generateReplaceCommitMetadata(
+      String instantTime, String partition, String replacedFileId, String newFileId) {
+    HoodieRequestedReplaceMetadata requestedReplaceMetadata = new HoodieRequestedReplaceMetadata();
+    requestedReplaceMetadata.setOperationType(WriteOperationType.CLUSTER.toString());
+    requestedReplaceMetadata.setVersion(1);
+    HoodieSliceInfo sliceInfo = HoodieSliceInfo.newBuilder().setFileId(replacedFileId).build();
+    List<HoodieClusteringGroup> clusteringGroups = new ArrayList<>();
+    clusteringGroups.add(HoodieClusteringGroup.newBuilder()
+        .setVersion(1).setNumOutputFileGroups(1).setMetrics(Collections.emptyMap())
+        .setSlices(Collections.singletonList(sliceInfo)).build());
+    requestedReplaceMetadata.setExtraMetadata(Collections.emptyMap());
+    requestedReplaceMetadata.setClusteringPlan(HoodieClusteringPlan.newBuilder()
+        .setVersion(1).setExtraMetadata(Collections.emptyMap())
+        .setStrategy(HoodieClusteringStrategy.newBuilder().setStrategyClassName("").setVersion(1).build())
+        .setInputGroups(clusteringGroups).build());
+
+    HoodieReplaceCommitMetadata replaceMetadata = new HoodieReplaceCommitMetadata();
+    replaceMetadata.addReplaceFileId(partition, replacedFileId);
+    replaceMetadata.setOperationType(WriteOperationType.CLUSTER);
+    if (!StringUtils.isNullOrEmpty(newFileId)) {
+      HoodieWriteStat writeStat = new HoodieWriteStat();
+      writeStat.setPartitionPath(partition);
+      writeStat.setPath(partition + "/" + getBaseFilename(instantTime, newFileId));
+      writeStat.setFileId(newFileId);
+      writeStat.setTotalWriteBytes(1);
+      writeStat.setFileSizeInBytes(1);
+      replaceMetadata.addWriteStat(partition, writeStat);
+    }
+    return Pair.of(requestedReplaceMetadata, replaceMetadata);
   }
 
   @Test
@@ -736,7 +775,8 @@ public class TestCleaner extends HoodieCleanerTestBase {
     HoodieCleanMetadata metadata = CleanerUtils.convertCleanMetadata(
         instantTime,
         Option.of(0L),
-        Arrays.asList(cleanStat1, cleanStat2)
+        Arrays.asList(cleanStat1, cleanStat2),
+        Collections.EMPTY_MAP
     );
     metadata.setVersion(CleanerUtils.CLEAN_METADATA_VERSION_1);
 
@@ -891,7 +931,7 @@ public class TestCleaner extends HoodieCleanerTestBase {
   @Test
   public void testCleaningWithZeroPartitionPaths() throws Exception {
     HoodieWriteConfig config = HoodieWriteConfig.newBuilder().withPath(basePath)
-        .withMetadataConfig(HoodieMetadataConfig.newBuilder().withAssumeDatePartitioning(true).build())
+        .withMetadataConfig(HoodieMetadataConfig.newBuilder().build())
         .withCleanConfig(HoodieCleanConfig.newBuilder()
             .withCleanerPolicy(HoodieCleaningPolicy.KEEP_LATEST_COMMITS).retainCommits(2).build())
         .build();
@@ -899,14 +939,15 @@ public class TestCleaner extends HoodieCleanerTestBase {
     // Make a commit, although there are no partitionPaths.
     // Example use-case of this is when a client wants to create a table
     // with just some commit metadata, but no data/partitionPaths.
-    HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context);
-    HoodieTestTable testTable = HoodieMetadataTestTable.of(metaClient, metadataWriter, Option.of(context));
-    testTable.doWriteOperation("001", WriteOperationType.INSERT, Collections.emptyList(), 1);
+    try (HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context)) {
+      HoodieTestTable testTable = HoodieMetadataTestTable.of(metaClient, metadataWriter, Option.of(context));
+      testTable.doWriteOperation("001", WriteOperationType.INSERT, Collections.emptyList(), 1);
 
-    metaClient = HoodieTableMetaClient.reload(metaClient);
+      metaClient = HoodieTableMetaClient.reload(metaClient);
 
-    List<HoodieCleanStat> hoodieCleanStatsOne = runCleaner(config);
-    assertTrue(hoodieCleanStatsOne.isEmpty(), "HoodieCleanStats should be empty for a table with empty partitionPaths");
+      List<HoodieCleanStat> hoodieCleanStatsOne = runCleaner(config);
+      assertTrue(hoodieCleanStatsOne.isEmpty(), "HoodieCleanStats should be empty for a table with empty partitionPaths");
+    }
   }
 
   /**
@@ -916,7 +957,7 @@ public class TestCleaner extends HoodieCleanerTestBase {
   @ValueSource(booleans = {true, false})
   public void testKeepLatestCommitsWithPendingCompactions(boolean isAsync) throws Exception {
     HoodieWriteConfig config = HoodieWriteConfig.newBuilder().withPath(basePath)
-        .withMetadataConfig(HoodieMetadataConfig.newBuilder().withAssumeDatePartitioning(true).build())
+        .withMetadataConfig(HoodieMetadataConfig.newBuilder().build())
         .withCleanConfig(HoodieCleanConfig.newBuilder()
             .withCleanerPolicy(HoodieCleaningPolicy.KEEP_LATEST_COMMITS).withAsyncClean(isAsync).retainCommits(2).build())
         .build();
@@ -941,7 +982,7 @@ public class TestCleaner extends HoodieCleanerTestBase {
   public void testKeepLatestVersionsWithPendingCompactions(boolean retryFailure) throws Exception {
     HoodieWriteConfig config =
         HoodieWriteConfig.newBuilder().withPath(basePath)
-            .withMetadataConfig(HoodieMetadataConfig.newBuilder().withAssumeDatePartitioning(true).build())
+            .withMetadataConfig(HoodieMetadataConfig.newBuilder().build())
             .withCleanConfig(HoodieCleanConfig.newBuilder()
                 .withCleanerPolicy(HoodieCleaningPolicy.KEEP_LATEST_FILE_VERSIONS).retainFileVersions(2).build())
             .build();
@@ -966,7 +1007,7 @@ public class TestCleaner extends HoodieCleanerTestBase {
     HoodieWriteConfig config =
         HoodieWriteConfig.newBuilder()
             .withPath(basePath)
-            .withMetadataConfig(HoodieMetadataConfig.newBuilder().withAssumeDatePartitioning(true).build())
+            .withMetadataConfig(HoodieMetadataConfig.newBuilder().build())
             .withCleanConfig(HoodieCleanConfig.newBuilder()
                 .withCleanerPolicy(HoodieCleaningPolicy.KEEP_LATEST_FILE_VERSIONS).retainFileVersions(1).build())
             .build();
@@ -978,7 +1019,7 @@ public class TestCleaner extends HoodieCleanerTestBase {
     for (String f : cleanerFileNames) {
       Path commitFile = new Path(Paths
           .get(metaClient.getBasePath(), HoodieTableMetaClient.METAFOLDER_NAME, f).toString());
-      try (FSDataOutputStream os = metaClient.getFs().create(commitFile, true)) {
+      try (OutputStream os = metaClient.getFs().create(commitFile, true)) {
         // Write empty clean metadata
         os.write(new byte[0]);
       }
@@ -994,63 +1035,63 @@ public class TestCleaner extends HoodieCleanerTestBase {
   public void testRerunFailedClean(boolean simulateMetadataFailure) throws Exception {
     HoodieWriteConfig config = HoodieWriteConfig.newBuilder().withPath(basePath)
         .withMetadataConfig(HoodieMetadataConfig.newBuilder()
-            .withMaxNumDeltaCommitsBeforeCompaction(1)
-            .withAssumeDatePartitioning(true).build())
+            .withMaxNumDeltaCommitsBeforeCompaction(1).build())
         .withCleanConfig(HoodieCleanConfig.newBuilder()
             .withCleanerPolicy(HoodieCleaningPolicy.KEEP_LATEST_COMMITS).retainCommits(2).build())
         .build();
 
-    HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context);
-    HoodieTestTable testTable = HoodieMetadataTestTable.of(metaClient, metadataWriter, Option.of(context));
-    String p0 = "2020/01/01";
-    String p1 = "2020/01/02";
+    try (HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context)) {
+      HoodieTestTable testTable = HoodieMetadataTestTable.of(metaClient, metadataWriter, Option.of(context));
+      String p0 = "2020/01/01";
+      String p1 = "2020/01/02";
 
-    // make 1 commit, with 1 file per partition
-    String file1P0C0 = UUID.randomUUID().toString();
-    String file1P1C0 = UUID.randomUUID().toString();
-    Map<String, List<String>> part1ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
-      {
-        put(p0, CollectionUtils.createImmutableList(file1P0C0));
-        put(p1, CollectionUtils.createImmutableList(file1P1C0));
-      }
-    });
-    commitWithMdt("00000000000001", part1ToFileId, testTable, metadataWriter, true, true);
-    metaClient = HoodieTableMetaClient.reload(metaClient);
+      // make 1 commit, with 1 file per partition
+      String file1P0C0 = UUID.randomUUID().toString();
+      String file1P1C0 = UUID.randomUUID().toString();
+      Map<String, List<String>> part1ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
+        {
+          put(p0, CollectionUtils.createImmutableList(file1P0C0));
+          put(p1, CollectionUtils.createImmutableList(file1P1C0));
+        }
+      });
+      commitWithMdt("00000000000001", part1ToFileId, testTable, metadataWriter, true, true);
+      metaClient = HoodieTableMetaClient.reload(metaClient);
 
-    // make next replacecommit, with 1 clustering operation. logically delete p0. No change to p1
-    // notice that clustering generates empty inflight commit files
-    Map<String, String> partitionAndFileId002 = testTable.forReplaceCommit("00000000000002").getFileIdsWithBaseFilesInPartitions(p0);
-    String file2P0C1 = partitionAndFileId002.get(p0);
-    Pair<HoodieRequestedReplaceMetadata, HoodieReplaceCommitMetadata> replaceMetadata =
-        generateReplaceCommitMetadata("00000000000002", p0, file1P0C0, file2P0C1);
-    testTable.addReplaceCommit("00000000000002", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
+      // make next replacecommit, with 1 clustering operation. logically delete p0. No change to p1
+      // notice that clustering generates empty inflight commit files
+      Map<String, String> partitionAndFileId002 = testTable.forReplaceCommit("00000000000002").getFileIdsWithBaseFilesInPartitions(p0);
+      String file2P0C1 = partitionAndFileId002.get(p0);
+      Pair<HoodieRequestedReplaceMetadata, HoodieReplaceCommitMetadata> replaceMetadata =
+          generateReplaceCommitMetadata("00000000000002", p0, file1P0C0, file2P0C1);
+      testTable.addReplaceCommit("00000000000002", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
 
-    // make next replacecommit, with 1 clustering operation. Replace data in p1. No change to p0
-    // notice that clustering generates empty inflight commit files
-    Map<String, String> partitionAndFileId003 = testTable.forReplaceCommit("00000000000003").getFileIdsWithBaseFilesInPartitions(p1);
-    String file3P1C2 = partitionAndFileId003.get(p1);
-    replaceMetadata = generateReplaceCommitMetadata("00000000000003", p1, file1P1C0, file3P1C2);
-    testTable.addReplaceCommit("00000000000003", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
+      // make next replacecommit, with 1 clustering operation. Replace data in p1. No change to p0
+      // notice that clustering generates empty inflight commit files
+      Map<String, String> partitionAndFileId003 = testTable.forReplaceCommit("00000000000003").getFileIdsWithBaseFilesInPartitions(p1);
+      String file3P1C2 = partitionAndFileId003.get(p1);
+      replaceMetadata = generateReplaceCommitMetadata("00000000000003", p1, file1P1C0, file3P1C2);
+      testTable.addReplaceCommit("00000000000003", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
 
-    // make next replacecommit, with 1 clustering operation. Replace data in p0 again
-    // notice that clustering generates empty inflight commit files
-    Map<String, String> partitionAndFileId004 = testTable.forReplaceCommit("00000000000004").getFileIdsWithBaseFilesInPartitions(p0);
-    String file4P0C3 = partitionAndFileId004.get(p0);
-    replaceMetadata = generateReplaceCommitMetadata("00000000000004", p0, file2P0C1, file4P0C3);
-    testTable.addReplaceCommit("00000000000004", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
+      // make next replacecommit, with 1 clustering operation. Replace data in p0 again
+      // notice that clustering generates empty inflight commit files
+      Map<String, String> partitionAndFileId004 = testTable.forReplaceCommit("00000000000004").getFileIdsWithBaseFilesInPartitions(p0);
+      String file4P0C3 = partitionAndFileId004.get(p0);
+      replaceMetadata = generateReplaceCommitMetadata("00000000000004", p0, file2P0C1, file4P0C3);
+      testTable.addReplaceCommit("00000000000004", Option.of(replaceMetadata.getKey()), Option.empty(), replaceMetadata.getValue());
 
-    // run cleaner with failures
-    List<HoodieCleanStat> hoodieCleanStats = runCleaner(config, true, simulateMetadataFailure, 5, true);
-    assertTrue(testTable.baseFileExists(p0, "00000000000004", file4P0C3));
-    assertTrue(testTable.baseFileExists(p0, "00000000000002", file2P0C1));
-    assertTrue(testTable.baseFileExists(p1, "00000000000003", file3P1C2));
-    assertFalse(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
-    //file1P1C0 still stays because its not replaced until 3 and its the only version available
-    assertTrue(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
+      // run cleaner with failures
+      List<HoodieCleanStat> hoodieCleanStats = runCleaner(config, true, simulateMetadataFailure, 5, true);
+      assertTrue(testTable.baseFileExists(p0, "00000000000004", file4P0C3));
+      assertTrue(testTable.baseFileExists(p0, "00000000000002", file2P0C1));
+      assertTrue(testTable.baseFileExists(p1, "00000000000003", file3P1C2));
+      assertFalse(testTable.baseFileExists(p0, "00000000000001", file1P0C0));
+      //file1P1C0 still stays because its not replaced until 3 and its the only version available
+      assertTrue(testTable.baseFileExists(p1, "00000000000001", file1P1C0));
+    }
   }
 
   /**
-   * Test if cleaner will fallback to full clean if commit for incremental clean is archived.
+   * Test if cleaner will fall back to full clean if commit for incremental clean is archived.
    */
   @Test
   public void testIncrementalFallbackToFullClean() throws Exception {
@@ -1069,71 +1110,73 @@ public class TestCleaner extends HoodieCleanerTestBase {
         .withMarkersType(MarkerType.DIRECT.name())
         .withPath(basePath)
         .build();
-    HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context);
-    // reload because table configs could have been updated
-    metaClient = HoodieTableMetaClient.reload(metaClient);
-    HoodieTestTable testTable = HoodieMetadataTestTable.of(metaClient, metadataWriter, Option.of(context));
+    try (HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context)) {
+      // reload because table configs could have been updated
+      metaClient = HoodieTableMetaClient.reload(metaClient);
+      HoodieTestTable testTable = HoodieMetadataTestTable.of(metaClient, metadataWriter, Option.of(context));
 
-    String p1 = "part_1";
-    String p2 = "part_2";
-    testTable.withPartitionMetaFiles(p1, p2);
+      String p1 = "part_1";
+      String p2 = "part_2";
+      testTable.withPartitionMetaFiles(p1, p2);
 
-    // add file partition "part_1"
-    String file1P1 = UUID.randomUUID().toString();
-    String file2P1 = UUID.randomUUID().toString();
-    Map<String, List<String>> part1ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
-      {
-        put(p1, CollectionUtils.createImmutableList(file1P1, file2P1));
-      }
-    });
-    commitWithMdt("1", part1ToFileId, testTable, metadataWriter);
-    commitWithMdt("2", part1ToFileId, testTable, metadataWriter);
+      // add file partition "part_1"
+      String file1P1 = UUID.randomUUID().toString();
+      String file2P1 = UUID.randomUUID().toString();
+      Map<String, List<String>> part1ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
+        {
+          put(p1, CollectionUtils.createImmutableList(file1P1, file2P1));
+        }
+      });
+      commitWithMdt("10", part1ToFileId, testTable, metadataWriter);
+      testTable.addClean("15");
+      commitWithMdt("20", part1ToFileId, testTable, metadataWriter);
 
-    // add clean instant
-    HoodieCleanerPlan cleanerPlan = new HoodieCleanerPlan(new HoodieActionInstant("", "", ""),
-        "", "", new HashMap<>(), CleanPlanV2MigrationHandler.VERSION, new HashMap<>(), new ArrayList<>());
-    HoodieCleanMetadata cleanMeta = new HoodieCleanMetadata("", 0L, 0,
-        "2", "", new HashMap<>(), CleanPlanV2MigrationHandler.VERSION, new HashMap<>());
-    testTable.addClean("3", cleanerPlan, cleanMeta);
+      // add clean instant
+      HoodieCleanerPlan cleanerPlan = new HoodieCleanerPlan(new HoodieActionInstant("", "", ""),
+          "", "", new HashMap<>(), CleanPlanV2MigrationHandler.VERSION, new HashMap<>(), new ArrayList<>(), Collections.emptyMap());
+      HoodieCleanMetadata cleanMeta = new HoodieCleanMetadata("", 0L, 0,
+          "20", "", new HashMap<>(), CleanPlanV2MigrationHandler.VERSION, new HashMap<>(), Collections.emptyMap());
+      testTable.addClean("30", cleanerPlan, cleanMeta);
 
-    // add file in partition "part_2"
-    String file3P2 = UUID.randomUUID().toString();
-    String file4P2 = UUID.randomUUID().toString();
-    Map<String, List<String>> part2ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
-      {
-        put(p2, CollectionUtils.createImmutableList(file3P2, file4P2));
-      }
-    });
-    commitWithMdt("3", part2ToFileId, testTable, metadataWriter);
-    commitWithMdt("4", part2ToFileId, testTable, metadataWriter);
+      // add file in partition "part_2"
+      String file3P2 = UUID.randomUUID().toString();
+      String file4P2 = UUID.randomUUID().toString();
+      Map<String, List<String>> part2ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
+        {
+          put(p2, CollectionUtils.createImmutableList(file3P2, file4P2));
+        }
+      });
+      commitWithMdt("30", part2ToFileId, testTable, metadataWriter);
+      commitWithMdt("40", part2ToFileId, testTable, metadataWriter);
 
-    // empty commits
-    String file5P2 = UUID.randomUUID().toString();
-    String file6P2 = UUID.randomUUID().toString();
-    part2ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
-      {
-        put(p2, CollectionUtils.createImmutableList(file5P2, file6P2));
-      }
-    });
-    commitWithMdt("5", part2ToFileId, testTable, metadataWriter);
-    commitWithMdt("6", part2ToFileId, testTable, metadataWriter);
+      // empty commits
+      String file5P2 = UUID.randomUUID().toString();
+      String file6P2 = UUID.randomUUID().toString();
+      part2ToFileId = Collections.unmodifiableMap(new HashMap<String, List<String>>() {
+        {
+          put(p2, CollectionUtils.createImmutableList(file5P2, file6P2));
+        }
+      });
+      commitWithMdt("50", part2ToFileId, testTable, metadataWriter);
+      commitWithMdt("60", part2ToFileId, testTable, metadataWriter);
 
-    // archive commit 1, 2
-    new HoodieTimelineArchiver<>(config, HoodieSparkTable.create(config, context, metaClient))
-        .archiveIfRequired(context, false);
-    metaClient = HoodieTableMetaClient.reload(metaClient);
-    assertFalse(metaClient.getActiveTimeline().containsInstant("1"));
-    assertFalse(metaClient.getActiveTimeline().containsInstant("2"));
+      // archive commit 1, 2
+      new HoodieTimelineArchiver<>(config, HoodieSparkTable.create(config, context, metaClient))
+          .archiveIfRequired(context, false);
+      metaClient = HoodieTableMetaClient.reload(metaClient);
+      assertFalse(metaClient.getActiveTimeline().containsInstant("10"));
+      assertFalse(metaClient.getActiveTimeline().containsInstant("20"));
 
-    runCleaner(config);
-    assertFalse(testTable.baseFileExists(p1, "1", file1P1), "Clean old FileSlice in p1 by fallback to full clean");
-    assertFalse(testTable.baseFileExists(p1, "1", file2P1), "Clean old FileSlice in p1 by fallback to full clean");
-    assertFalse(testTable.baseFileExists(p2, "3", file3P2), "Clean old FileSlice in p2");
-    assertFalse(testTable.baseFileExists(p2, "3", file4P2), "Clean old FileSlice in p2");
-    assertTrue(testTable.baseFileExists(p1, "2", file1P1), "Latest FileSlice exists");
-    assertTrue(testTable.baseFileExists(p1, "2", file2P1), "Latest FileSlice exists");
-    assertTrue(testTable.baseFileExists(p2, "4", file3P2), "Latest FileSlice exists");
-    assertTrue(testTable.baseFileExists(p2, "4", file4P2), "Latest FileSlice exists");
+      runCleaner(config);
+      assertFalse(testTable.baseFileExists(p1, "10", file1P1), "Clean old FileSlice in p1 by fallback to full clean");
+      assertFalse(testTable.baseFileExists(p1, "10", file2P1), "Clean old FileSlice in p1 by fallback to full clean");
+      assertFalse(testTable.baseFileExists(p2, "30", file3P2), "Clean old FileSlice in p2");
+      assertFalse(testTable.baseFileExists(p2, "30", file4P2), "Clean old FileSlice in p2");
+      assertTrue(testTable.baseFileExists(p1, "20", file1P1), "Latest FileSlice exists");
+      assertTrue(testTable.baseFileExists(p1, "20", file2P1), "Latest FileSlice exists");
+      assertTrue(testTable.baseFileExists(p2, "40", file3P2), "Latest FileSlice exists");
+      assertTrue(testTable.baseFileExists(p2, "40", file4P2), "Latest FileSlice exists");
+    }
   }
 
   /**
@@ -1147,141 +1190,142 @@ public class TestCleaner extends HoodieCleanerTestBase {
     HoodieTableMetaClient metaClient =
         HoodieTestUtils.init(hadoopConf, basePath, HoodieTableType.MERGE_ON_READ);
 
-    HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context);
+    try (HoodieTableMetadataWriter metadataWriter = SparkHoodieBackedTableMetadataWriter.create(hadoopConf, config, context)) {
 
-    final String partition = "2016/03/15";
-    String timePrefix = "00000000000";
-    Map<String, String> expFileIdToPendingCompaction = new HashMap<String, String>() {
-      {
-        put("fileId2", timePrefix + "004");
-        put("fileId3", timePrefix + "006");
-        put("fileId4", timePrefix + "008");
-        put("fileId5", timePrefix + "010");
-      }
-    };
-    Map<String, String> fileIdToLatestInstantBeforeCompaction = new HashMap<String, String>() {
-      {
-        put("fileId1", timePrefix + "000");
-        put("fileId2", timePrefix + "000");
-        put("fileId3", timePrefix + "001");
-        put("fileId4", timePrefix + "003");
-        put("fileId5", timePrefix + "005");
-        put("fileId6", timePrefix + "009");
-        put("fileId7", timePrefix + "013");
-      }
-    };
+      final String partition = "2016/03/15";
+      String timePrefix = "00000000000";
+      Map<String, String> expFileIdToPendingCompaction = new HashMap<String, String>() {
+        {
+          put("fileId2", timePrefix + "004");
+          put("fileId3", timePrefix + "006");
+          put("fileId4", timePrefix + "008");
+          put("fileId5", timePrefix + "010");
+        }
+      };
+      Map<String, String> fileIdToLatestInstantBeforeCompaction = new HashMap<String, String>() {
+        {
+          put("fileId1", timePrefix + "000");
+          put("fileId2", timePrefix + "000");
+          put("fileId3", timePrefix + "001");
+          put("fileId4", timePrefix + "003");
+          put("fileId5", timePrefix + "005");
+          put("fileId6", timePrefix + "009");
+          put("fileId7", timePrefix + "013");
+        }
+      };
 
-    // Generate 7 file-groups. First one has only one slice and no pending compaction. File Slices (2 - 5) has
-    // multiple versions with pending compaction. File Slices (6 - 7) have multiple file-slices but not under
-    // compactions
-    // FileIds 2-5 will be under compaction
-    // reload because table configs could have been updated
-    metaClient = HoodieTableMetaClient.reload(metaClient);
-    HoodieTestTable testTable = HoodieTestTable.of(metaClient);
+      // Generate 7 file-groups. First one has only one slice and no pending compaction. File Slices (2 - 5) has
+      // multiple versions with pending compaction. File Slices (6 - 7) have multiple file-slices but not under
+      // compactions
+      // FileIds 2-5 will be under compaction
+      // reload because table configs could have been updated
+      metaClient = HoodieTableMetaClient.reload(metaClient);
+      HoodieTestTable testTable = HoodieTestTable.of(metaClient);
 
-    testTable.withPartitionMetaFiles(partition);
+      testTable.withPartitionMetaFiles(partition);
 
-    // add file partition "part_1"
-    String file1P1 = "fileId1";
-    String file2P1 = "fileId2";
-    String file3P1 = "fileId3";
-    String file4P1 = "fileId4";
-    String file5P1 = "fileId5";
-    String file6P1 = "fileId6";
-    String file7P1 = "fileId7";
+      // add file partition "part_1"
+      String file1P1 = "fileId1";
+      String file2P1 = "fileId2";
+      String file3P1 = "fileId3";
+      String file4P1 = "fileId4";
+      String file5P1 = "fileId5";
+      String file6P1 = "fileId6";
+      String file7P1 = "fileId7";
 
-    Map<String, List<String>> part1ToFileId = new HashMap<>();
-    part1ToFileId.put(partition, Arrays.asList(file1P1, file2P1, file3P1, file4P1, file5P1, file6P1, file7P1));
-    // all 7 fileIds
-    commitWithMdt(timePrefix + "000", part1ToFileId, testTable, metadataWriter, true, true);
-    part1ToFileId = new HashMap<>();
-    part1ToFileId.put(partition, Arrays.asList(file3P1, file4P1, file5P1, file6P1, file7P1));
-    // fileIds 3 to 7
-    commitWithMdt(timePrefix + "001", part1ToFileId, testTable, metadataWriter, true, true);
-    part1ToFileId = new HashMap<>();
-    part1ToFileId.put(partition, Arrays.asList(file4P1, file5P1, file6P1, file7P1));
-    // fileIds 4 to 7
-    commitWithMdt(timePrefix + "003", part1ToFileId, testTable, metadataWriter, true, true);
+      Map<String, List<String>> part1ToFileId = new HashMap<>();
+      part1ToFileId.put(partition, Arrays.asList(file1P1, file2P1, file3P1, file4P1, file5P1, file6P1, file7P1));
+      // all 7 fileIds
+      commitWithMdt(timePrefix + "000", part1ToFileId, testTable, metadataWriter, true, true);
+      part1ToFileId = new HashMap<>();
+      part1ToFileId.put(partition, Arrays.asList(file3P1, file4P1, file5P1, file6P1, file7P1));
+      // fileIds 3 to 7
+      commitWithMdt(timePrefix + "001", part1ToFileId, testTable, metadataWriter, true, true);
+      part1ToFileId = new HashMap<>();
+      part1ToFileId.put(partition, Arrays.asList(file4P1, file5P1, file6P1, file7P1));
+      // fileIds 4 to 7
+      commitWithMdt(timePrefix + "003", part1ToFileId, testTable, metadataWriter, true, true);
 
-    // add compaction
-    testTable.addRequestedCompaction(timePrefix + "004", new FileSlice(partition, timePrefix + "000", file2P1));
+      // add compaction
+      testTable.addRequestedCompaction(timePrefix + "004", new FileSlice(partition, timePrefix + "000", file2P1));
 
-    part1ToFileId = new HashMap<>();
-    part1ToFileId.put(partition, Arrays.asList(file2P1));
-    commitWithMdt(timePrefix + "005", part1ToFileId, testTable, metadataWriter, false, true);
+      part1ToFileId = new HashMap<>();
+      part1ToFileId.put(partition, Arrays.asList(file2P1));
+      commitWithMdt(timePrefix + "005", part1ToFileId, testTable, metadataWriter, false, true);
 
-    part1ToFileId = new HashMap<>();
-    part1ToFileId.put(partition, Arrays.asList(file5P1, file6P1, file7P1));
-    commitWithMdt(timePrefix + "0055", part1ToFileId, testTable, metadataWriter, true, true);
+      part1ToFileId = new HashMap<>();
+      part1ToFileId.put(partition, Arrays.asList(file5P1, file6P1, file7P1));
+      commitWithMdt(timePrefix + "0055", part1ToFileId, testTable, metadataWriter, true, true);
 
-    testTable.addRequestedCompaction(timePrefix + "006", new FileSlice(partition, timePrefix + "001", file3P1));
+      testTable.addRequestedCompaction(timePrefix + "006", new FileSlice(partition, timePrefix + "001", file3P1));
 
-    part1ToFileId = new HashMap<>();
-    part1ToFileId.put(partition, Arrays.asList(file3P1));
-    commitWithMdt(timePrefix + "007", part1ToFileId, testTable, metadataWriter, false, true);
+      part1ToFileId = new HashMap<>();
+      part1ToFileId.put(partition, Arrays.asList(file3P1));
+      commitWithMdt(timePrefix + "007", part1ToFileId, testTable, metadataWriter, false, true);
 
-    part1ToFileId = new HashMap<>();
-    part1ToFileId.put(partition, Arrays.asList(file6P1, file7P1));
-    commitWithMdt(timePrefix + "0075", part1ToFileId, testTable, metadataWriter, true, true);
+      part1ToFileId = new HashMap<>();
+      part1ToFileId.put(partition, Arrays.asList(file6P1, file7P1));
+      commitWithMdt(timePrefix + "0075", part1ToFileId, testTable, metadataWriter, true, true);
 
-    testTable.addRequestedCompaction(timePrefix + "008", new FileSlice(partition, timePrefix + "003", file4P1));
+      testTable.addRequestedCompaction(timePrefix + "008", new FileSlice(partition, timePrefix + "003", file4P1));
 
-    part1ToFileId = new HashMap<>();
-    part1ToFileId.put(partition, Arrays.asList(file4P1));
-    commitWithMdt(timePrefix + "009", part1ToFileId, testTable, metadataWriter, false, true);
+      part1ToFileId = new HashMap<>();
+      part1ToFileId.put(partition, Arrays.asList(file4P1));
+      commitWithMdt(timePrefix + "009", part1ToFileId, testTable, metadataWriter, false, true);
 
-    part1ToFileId = new HashMap<>();
-    part1ToFileId.put(partition, Arrays.asList(file6P1, file7P1));
-    commitWithMdt(timePrefix + "0095", part1ToFileId, testTable, metadataWriter, true, true);
+      part1ToFileId = new HashMap<>();
+      part1ToFileId.put(partition, Arrays.asList(file6P1, file7P1));
+      commitWithMdt(timePrefix + "0095", part1ToFileId, testTable, metadataWriter, true, true);
 
-    testTable.addRequestedCompaction(timePrefix + "010", new FileSlice(partition, timePrefix + "005", file5P1));
+      testTable.addRequestedCompaction(timePrefix + "010", new FileSlice(partition, timePrefix + "005", file5P1));
 
-    part1ToFileId = new HashMap<>();
-    part1ToFileId.put(partition, Arrays.asList(file5P1));
-    commitWithMdt(timePrefix + "011", part1ToFileId, testTable, metadataWriter, false, true);
+      part1ToFileId = new HashMap<>();
+      part1ToFileId.put(partition, Arrays.asList(file5P1));
+      commitWithMdt(timePrefix + "011", part1ToFileId, testTable, metadataWriter, false, true);
 
-    part1ToFileId = new HashMap<>();
-    part1ToFileId.put(partition, Arrays.asList(file7P1));
-    commitWithMdt(timePrefix + "013", part1ToFileId, testTable, metadataWriter, true, true);
+      part1ToFileId = new HashMap<>();
+      part1ToFileId.put(partition, Arrays.asList(file7P1));
+      commitWithMdt(timePrefix + "013", part1ToFileId, testTable, metadataWriter, true, true);
 
-    // Clean now
-    metaClient = HoodieTableMetaClient.reload(metaClient);
-    List<HoodieCleanStat> hoodieCleanStats = runCleaner(config, 14, true);
+      // Clean now
+      metaClient = HoodieTableMetaClient.reload(metaClient);
+      List<HoodieCleanStat> hoodieCleanStats = runCleaner(config, 14, true);
 
-    // Test for safety
-    final HoodieTableMetaClient newMetaClient = HoodieTableMetaClient.reload(metaClient);
-    final HoodieTable hoodieTable = HoodieSparkTable.create(config, context, metaClient);
+      // Test for safety
+      final HoodieTableMetaClient newMetaClient = HoodieTableMetaClient.reload(metaClient);
+      final HoodieTable hoodieTable = HoodieSparkTable.create(config, context, metaClient);
 
-    expFileIdToPendingCompaction.forEach((fileId, value) -> {
-      String baseInstantForCompaction = fileIdToLatestInstantBeforeCompaction.get(fileId);
-      Option<FileSlice> fileSliceForCompaction = Option.fromJavaOptional(hoodieTable.getSliceView()
-          .getLatestFileSlicesBeforeOrOn(partition, baseInstantForCompaction,
-              true)
-          .filter(fs -> fs.getFileId().equals(fileId)).findFirst());
-      assertTrue(fileSliceForCompaction.isPresent(), "Base Instant for Compaction must be preserved");
-      assertTrue(fileSliceForCompaction.get().getBaseFile().isPresent(), "FileSlice has data-file");
-      assertEquals(2, fileSliceForCompaction.get().getLogFiles().count(), "FileSlice has log-files");
-    });
+      expFileIdToPendingCompaction.forEach((fileId, value) -> {
+        String baseInstantForCompaction = fileIdToLatestInstantBeforeCompaction.get(fileId);
+        Option<FileSlice> fileSliceForCompaction = Option.fromJavaOptional(hoodieTable.getSliceView()
+            .getLatestFileSlicesBeforeOrOn(partition, baseInstantForCompaction,
+                true)
+            .filter(fs -> fs.getFileId().equals(fileId)).findFirst());
+        assertTrue(fileSliceForCompaction.isPresent(), "Base Instant for Compaction must be preserved");
+        assertTrue(fileSliceForCompaction.get().getBaseFile().isPresent(), "FileSlice has data-file");
+        assertEquals(2, fileSliceForCompaction.get().getLogFiles().count(), "FileSlice has log-files");
+      });
 
-    // Test for progress (Did we clean some files ?)
-    long numFilesUnderCompactionDeleted = hoodieCleanStats.stream()
-        .flatMap(cleanStat -> convertPathToFileIdWithCommitTime(newMetaClient, cleanStat.getDeletePathPatterns())
-            .map(fileIdWithCommitTime -> {
-              if (expFileIdToPendingCompaction.containsKey(fileIdWithCommitTime.getKey())) {
-                assertTrue(HoodieTimeline.compareTimestamps(
-                        fileIdToLatestInstantBeforeCompaction.get(fileIdWithCommitTime.getKey()),
-                        HoodieTimeline.GREATER_THAN, fileIdWithCommitTime.getValue()),
-                    "Deleted instant time must be less than pending compaction");
-                return true;
-              }
-              return false;
-            })).filter(x -> x).count();
-    long numDeleted =
-        hoodieCleanStats.stream().mapToLong(cleanStat -> cleanStat.getDeletePathPatterns().size()).sum();
-    // Tighter check for regression
-    assertEquals(expNumFilesDeleted, numDeleted, "Correct number of files deleted");
-    assertEquals(expNumFilesUnderCompactionDeleted, numFilesUnderCompactionDeleted,
-        "Correct number of files under compaction deleted");
+      // Test for progress (Did we clean some files ?)
+      long numFilesUnderCompactionDeleted = hoodieCleanStats.stream()
+          .flatMap(cleanStat -> convertPathToFileIdWithCommitTime(newMetaClient, cleanStat.getDeletePathPatterns())
+              .map(fileIdWithCommitTime -> {
+                if (expFileIdToPendingCompaction.containsKey(fileIdWithCommitTime.getKey())) {
+                  assertTrue(HoodieTimeline.compareTimestamps(
+                          fileIdToLatestInstantBeforeCompaction.get(fileIdWithCommitTime.getKey()),
+                          HoodieTimeline.GREATER_THAN, fileIdWithCommitTime.getValue()),
+                      "Deleted instant time must be less than pending compaction");
+                  return true;
+                }
+                return false;
+              })).filter(x -> x).count();
+      long numDeleted =
+          hoodieCleanStats.stream().mapToLong(cleanStat -> cleanStat.getDeletePathPatterns().size()).sum();
+      // Tighter check for regression
+      assertEquals(expNumFilesDeleted, numDeleted, "Correct number of files deleted");
+      assertEquals(expNumFilesUnderCompactionDeleted, numFilesUnderCompactionDeleted,
+          "Correct number of files under compaction deleted");
+    }
   }
 
   private Stream<Pair<String, String>> convertPathToFileIdWithCommitTime(final HoodieTableMetaClient metaClient,
@@ -1295,7 +1339,7 @@ public class TestCleaner extends HoodieCleanerTestBase {
       return Pair.of(FSUtils.getFileId(fileName), FSUtils.getCommitTime(fileName));
     });
     Stream<Pair<String, String>> stream2 = paths.stream().filter(rtFilePredicate).map(path -> Pair.of(FSUtils.getFileIdFromLogPath(new Path(path)),
-        FSUtils.getBaseCommitTimeFromLogPath(new Path(path))));
+        FSUtils.getDeltaCommitTimeFromLogPath(new Path(path))));
     return Stream.concat(stream1, stream2);
   }
 

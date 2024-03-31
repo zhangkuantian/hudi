@@ -20,7 +20,6 @@
 package org.apache.hudi
 
 import org.apache.hudi.DataSourceWriteOptions.{INSERT_DROP_DUPS, PRECOMBINE_FIELD}
-import org.apache.hudi.HoodieSparkSqlWriter.getClass
 import org.apache.hudi.common.config.HoodieConfig
 import org.apache.hudi.common.table.HoodieTableConfig
 import org.apache.hudi.config.HoodieWriteConfig
@@ -32,9 +31,7 @@ object AutoRecordKeyGenerationUtils {
   private val log = LoggerFactory.getLogger(getClass)
 
   def mayBeValidateParamsForAutoGenerationOfRecordKeys(parameters: Map[String, String], hoodieConfig: HoodieConfig): Unit = {
-    val autoGenerateRecordKeys = isAutoGenerateRecordKeys(parameters)
-    // hudi will auto generate.
-    if (autoGenerateRecordKeys) {
+    if (shouldAutoGenerateRecordKeys(parameters)) {
       // de-dup is not supported with auto generation of record keys
       if (parameters.getOrElse(HoodieWriteConfig.COMBINE_BEFORE_INSERT.key(),
         HoodieWriteConfig.COMBINE_BEFORE_INSERT.defaultValue()).toBoolean) {
@@ -48,14 +45,15 @@ object AutoRecordKeyGenerationUtils {
       if (!parameters.getOrElse(HoodieTableConfig.POPULATE_META_FIELDS.key(), HoodieTableConfig.POPULATE_META_FIELDS.defaultValue().toString).toBoolean) {
         throw new HoodieKeyGeneratorException("Disabling " + HoodieTableConfig.POPULATE_META_FIELDS.key() + " is not supported with auto generation of record keys")
       }
-    }
-
-    if (hoodieConfig.contains(PRECOMBINE_FIELD.key())) {
-      log.warn("Precombine field " + hoodieConfig.getString(PRECOMBINE_FIELD.key()) + " will be ignored with auto record key generation enabled")
+      if (hoodieConfig.contains(PRECOMBINE_FIELD.key())) {
+        log.warn("Precombine field " + hoodieConfig.getString(PRECOMBINE_FIELD.key()) + " will be ignored with auto record key generation enabled")
+      }
     }
   }
 
-  def isAutoGenerateRecordKeys(parameters: Map[String, String]): Boolean = {
-    !parameters.contains(KeyGeneratorOptions.RECORDKEY_FIELD_NAME.key()) // if record key is not configured,
+  def shouldAutoGenerateRecordKeys(parameters: Map[String, String]): Boolean = {
+    val recordKeyFromTableConfig = parameters.getOrElse(HoodieTableConfig.RECORDKEY_FIELDS.key(), "")
+    val recordKeyFromWriterConfig = parameters.getOrElse(KeyGeneratorOptions.RECORDKEY_FIELD_NAME.key(), "")
+    recordKeyFromTableConfig.isEmpty && recordKeyFromWriterConfig.isEmpty
   }
 }

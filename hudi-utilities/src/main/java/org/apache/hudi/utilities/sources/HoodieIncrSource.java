@@ -19,9 +19,11 @@
 package org.apache.hudi.utilities.sources;
 
 import org.apache.hudi.DataSourceReadOptions;
+import org.apache.hudi.common.config.HoodieReaderConfig;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.table.timeline.TimelineUtils.HollowCommitHandling;
+import org.apache.hudi.common.util.CollectionUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.utilities.config.HoodieIncrSourceConfig;
@@ -37,10 +39,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
 import static org.apache.hudi.DataSourceReadOptions.BEGIN_INSTANTTIME;
 import static org.apache.hudi.DataSourceReadOptions.END_INSTANTTIME;
-import static org.apache.hudi.DataSourceReadOptions.INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN_FOR_NON_EXISTING_FILES;
+import static org.apache.hudi.DataSourceReadOptions.INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN;
 import static org.apache.hudi.DataSourceReadOptions.INCREMENTAL_READ_HANDLE_HOLLOW_COMMIT;
 import static org.apache.hudi.DataSourceReadOptions.QUERY_TYPE;
 import static org.apache.hudi.DataSourceReadOptions.QUERY_TYPE_INCREMENTAL_OPT_VAL;
@@ -56,6 +61,9 @@ import static org.apache.hudi.utilities.sources.helpers.IncrSourceHelper.getHoll
 public class HoodieIncrSource extends RowSource {
 
   private static final Logger LOG = LoggerFactory.getLogger(HoodieIncrSource.class);
+  public static final Set<String> HOODIE_INCR_SOURCE_READ_OPT_KEYS =
+      CollectionUtils.createImmutableSet(HoodieReaderConfig.FILE_GROUP_READER_ENABLED.key());
+  private final Option<SnapshotLoadQuerySplitter> snapshotLoadQuerySplitter;
 
   public static class Config {
 
@@ -125,9 +133,20 @@ public class HoodieIncrSource extends RowSource {
         HoodieIncrSourceConfig.HOODIE_DROP_ALL_META_FIELDS_FROM_SOURCE.defaultValue();
   }
 
+  private final Map<String, String> readOpts = new HashMap<>();
+
   public HoodieIncrSource(TypedProperties props, JavaSparkContext sparkContext, SparkSession sparkSession,
                           SchemaProvider schemaProvider) {
     super(props, sparkContext, sparkSession, schemaProvider);
+
+    for (Object key : props.keySet()) {
+      String keyString = key.toString();
+      if (HOODIE_INCR_SOURCE_READ_OPT_KEYS.contains(keyString)) {
+        readOpts.put(keyString, props.getString(key.toString()));
+      }
+    }
+
+    this.snapshotLoadQuerySplitter = SnapshotLoadQuerySplitter.getInstance(props);
   }
 
   @Override
@@ -174,19 +193,25 @@ public class HoodieIncrSource extends RowSource {
     // Do Incr pull. Set end instant if available
     if (queryInfo.isIncremental()) {
       source = sparkSession.read().format("org.apache.hudi")
+          .options(readOpts)
           .option(QUERY_TYPE().key(), QUERY_TYPE_INCREMENTAL_OPT_VAL())
           .option(BEGIN_INSTANTTIME().key(), queryInfo.getStartInstant())
           .option(END_INSTANTTIME().key(), queryInfo.getEndInstant())
-          .option(INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN_FOR_NON_EXISTING_FILES().key(),
-              props.getString(INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN_FOR_NON_EXISTING_FILES().key(),
-                  INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN_FOR_NON_EXISTING_FILES().defaultValue()))
+          .option(INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN().key(),
+              props.getString(INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN().key(),
+                  INCREMENTAL_FALLBACK_TO_FULL_TABLE_SCAN().defaultValue()))
           .option(INCREMENTAL_READ_HANDLE_HOLLOW_COMMIT().key(), handlingMode.name())
           .load(srcPath);
     } else {
       // if checkpoint is missing from source table, and if strategy is set to READ_UPTO_LATEST_COMMIT, we have to issue snapshot query
-      source = sparkSession.read().format("org.apache.hudi")
-          .option(QUERY_TYPE().key(), DataSourceReadOptions.QUERY_TYPE_SNAPSHOT_OPT_VAL())
-          .load(srcPath)
+      Dataset<Row> snapshot = sparkSession.read().format("org.apache.hudi")
+          .options(readOpts)
+          .option(DataSourceReadOptions.QUERY_TYPE().key(), DataSourceReadOptions.QUERY_TYPE_SNAPSHOT_OPT_VAL())
+          .load(srcPath);
+      if (snapshotLoadQuerySplitter.isPresent()) {
+        queryInfo = snapshotLoadQuerySplitter.get().getNextCheckpoint(snapshot, queryInfo);
+      }
+      source = snapshot
           // add filtering so that only interested records are returned.
           .filter(String.format("%s > '%s'", HoodieRecord.COMMIT_TIME_METADATA_FIELD,
               queryInfo.getStartInstant()))

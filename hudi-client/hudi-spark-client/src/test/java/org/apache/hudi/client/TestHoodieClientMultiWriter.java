@@ -34,7 +34,6 @@ import org.apache.hudi.common.model.TableServiceType;
 import org.apache.hudi.common.model.WriteConcurrencyMode;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.marker.MarkerType;
-import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
 import org.apache.hudi.common.table.view.FileSystemViewStorageConfig;
 import org.apache.hudi.common.table.view.FileSystemViewStorageType;
@@ -48,6 +47,7 @@ import org.apache.hudi.config.HoodieCompactionConfig;
 import org.apache.hudi.config.HoodieLockConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieWriteConflictException;
+import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.table.action.HoodieWriteMetadata;
 import org.apache.hudi.table.marker.SimpleDirectMarkerBasedDetectionStrategy;
 import org.apache.hudi.table.marker.SimpleTransactionDirectMarkerBasedDetectionStrategy;
@@ -165,6 +165,18 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
     return opts;
   }
 
+  @ParameterizedTest
+  @MethodSource("configParamsDirectBased")
+  public void testHoodieClientBasicMultiWriterWithEarlyConflictDetectionDirect(String tableType, String earlyConflictDetectionStrategy) throws Exception {
+    testHoodieClientBasicMultiWriterWithEarlyConflictDetection(tableType, MarkerType.DIRECT.name(), earlyConflictDetectionStrategy);
+  }
+
+  @ParameterizedTest
+  @MethodSource("configParamsTimelineServerBased")
+  public void testHoodieClientBasicMultiWriterWithEarlyConflictDetectionTimelineServerBased(String tableType, String earlyConflictDetectionStrategy) throws Exception {
+    testHoodieClientBasicMultiWriterWithEarlyConflictDetection(tableType, MarkerType.TIMELINE_SERVER_BASED.name(), earlyConflictDetectionStrategy);
+  }
+
   /**
    * Test multi-writers with early conflict detect enable, including
    * 1. MOR + Direct marker
@@ -185,9 +197,7 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
    * @param markerType
    * @throws Exception
    */
-  @ParameterizedTest
-  @MethodSource("configParams")
-  public void testHoodieClientBasicMultiWriterWithEarlyConflictDetection(String tableType, String markerType, String earlyConflictDetectionStrategy) throws Exception {
+  private void testHoodieClientBasicMultiWriterWithEarlyConflictDetection(String tableType, String markerType, String earlyConflictDetectionStrategy) throws Exception {
     if (tableType.equalsIgnoreCase(HoodieTableType.MERGE_ON_READ.name())) {
       setUpMORTestTable();
     }
@@ -246,7 +256,7 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
     HoodieWriteConfig config4 = HoodieWriteConfig.newBuilder().withProperties(writeConfig.getProps()).withHeartbeatIntervalInMs(heartBeatIntervalForCommit4).build();
     final SparkRDDWriteClient client4 = getHoodieWriteClient(config4);
 
-    Path heartbeatFilePath = new Path(HoodieTableMetaClient.getHeartbeatFolderPath(basePath) + Path.SEPARATOR + nextCommitTime3);
+    Path heartbeatFilePath = new Path(HoodieTableMetaClient.getHeartbeatFolderPath(basePath) + StoragePath.SEPARATOR + nextCommitTime3);
     fs.create(heartbeatFilePath, true);
 
     // Wait for heart beat expired for failed commitTime3 "003"
@@ -314,7 +324,7 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
 
     Future future1 = executors.submit(() -> {
       try {
-        final String nextCommitTime = HoodieActiveTimeline.createNewInstantTime();
+        final String nextCommitTime = client1.createNewInstantTime();
         final JavaRDD<WriteStatus> writeStatusList = startCommitForUpdate(writeConfig, client1, nextCommitTime, 100);
 
         // Wait for the 2nd writer to start the commit
@@ -335,7 +345,7 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
 
     Future future2 = executors.submit(() -> {
       try {
-        final String nextCommitTime = HoodieActiveTimeline.createNewInstantTime();
+        final String nextCommitTime = client2.createNewInstantTime();
 
         // Wait for the 1st writer to make progress with the commit
         cyclicBarrier.await(60, TimeUnit.SECONDS);
@@ -448,6 +458,11 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
     if (tableType == HoodieTableType.MERGE_ON_READ) {
       setUpMORTestTable();
     }
+
+    // Use RDD API to perform clustering (TODO: Fix row-writer API)
+    Properties properties = new Properties();
+    properties.put("hoodie.datasource.write.row.writer.enable", String.valueOf(false));
+
     // Disabling embedded timeline server, it doesn't work with multiwriter
     HoodieWriteConfig.Builder writeConfigBuilder = getConfigBuilder()
         .withCleanConfig(HoodieCleanConfig.newBuilder()
@@ -466,20 +481,22 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
         .withWriteConcurrencyMode(WriteConcurrencyMode.OPTIMISTIC_CONCURRENCY_CONTROL)
         .withLockConfig(HoodieLockConfig.newBuilder().withLockProvider(providerClass)
             .withConflictResolutionStrategy(resolutionStrategy)
-            .build()).withAutoCommit(false).withProperties(lockProperties);
+            .build()).withAutoCommit(false).withProperties(lockProperties)
+        .withProperties(properties);
+
     Set<String> validInstants = new HashSet<>();
 
     // Create the first commit with inserts
     HoodieWriteConfig cfg = writeConfigBuilder.build();
     SparkRDDWriteClient client = getHoodieWriteClient(cfg);
-    String firstCommitTime = HoodieActiveTimeline.createNewInstantTime();
+    String firstCommitTime = client.createNewInstantTime();
     createCommitWithInserts(cfg, client, "000", firstCommitTime, 200, true);
     validInstants.add(firstCommitTime);
 
     // Create 2 commits with upserts
-    String secondCommitTime = HoodieActiveTimeline.createNewInstantTime();
+    String secondCommitTime = client.createNewInstantTime();
     createCommitWithUpserts(cfg, client, firstCommitTime, "000", secondCommitTime, 100);
-    String thirdCommitTime = HoodieActiveTimeline.createNewInstantTime();
+    String thirdCommitTime = client.createNewInstantTime();
     createCommitWithUpserts(cfg, client, secondCommitTime, "000", thirdCommitTime, 100);
     validInstants.add(secondCommitTime);
     validInstants.add(thirdCommitTime);
@@ -502,17 +519,20 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
 
     // Create upserts, schedule cleaning, schedule compaction in parallel
     Future future1 = executors.submit(() -> {
-      final String newCommitTime = HoodieActiveTimeline.createNewInstantTime();
+      final String newCommitTime = client1.createNewInstantTime();
       final int numRecords = 100;
       final String commitTimeBetweenPrevAndNew = secondCommitTime;
 
       // We want the upsert to go through only after the compaction
       // and cleaning schedule completion. So, waiting on latch here.
       latchCountDownAndWait(scheduleCountDownLatch, 30000);
-      if (tableType == HoodieTableType.MERGE_ON_READ) {
-        // Since the compaction already went in, this upsert has
+      if (tableType == HoodieTableType.MERGE_ON_READ && !(resolutionStrategy instanceof PreferWriterConflictResolutionStrategy)) {
+        // HUDI-6897: Improve SimpleConcurrentFileWritesConflictResolutionStrategy for NB-CC
+        // There is no need to throw concurrent modification exception for the simple strategy under NB-CC, because the compactor would finally resolve the conflicts instead.
+
+        // Since the concurrent modifications went in, this upsert has
         // to fail
-        assertThrows(IllegalArgumentException.class, () -> {
+        assertThrows(HoodieWriteConflictException.class, () -> {
           createCommitWithUpserts(cfg, client1, thirdCommitTime, commitTimeBetweenPrevAndNew, newCommitTime, numRecords);
         });
       } else {
@@ -528,7 +548,7 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
     Future future2 = executors.submit(() -> {
       if (tableType == HoodieTableType.MERGE_ON_READ) {
         assertDoesNotThrow(() -> {
-          String compactionTimeStamp = HoodieActiveTimeline.createNewInstantTime();
+          String compactionTimeStamp = client2.createNewInstantTime();
           client2.scheduleTableService(compactionTimeStamp, Option.empty(), TableServiceType.COMPACT);
         });
       }
@@ -538,7 +558,7 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
     Future future3 = executors.submit(() -> {
       assertDoesNotThrow(() -> {
         latchCountDownAndWait(scheduleCountDownLatch, 30000);
-        String cleanCommitTime = HoodieActiveTimeline.createNewInstantTime();
+        String cleanCommitTime = client3.createNewInstantTime();
         client3.scheduleTableService(cleanCommitTime, Option.empty(), TableServiceType.CLEAN);
       });
     });
@@ -554,12 +574,12 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
         .firstInstant();
     String pendingCleanTime = pendingCleanInstantOp.isPresent()
         ? pendingCleanInstantOp.get().getTimestamp()
-        : HoodieActiveTimeline.createNewInstantTime();
+        : client.createNewInstantTime();
 
     CountDownLatch runCountDownLatch = new CountDownLatch(threadCount);
     // Create inserts, run cleaning, run compaction in parallel
     future1 = executors.submit(() -> {
-      final String newCommitTime = HoodieActiveTimeline.createNewInstantTime();
+      final String newCommitTime = client1.createNewInstantTime();
       final int numRecords = 100;
       latchCountDownAndWait(runCountDownLatch, 30000);
       assertDoesNotThrow(() -> {
@@ -719,7 +739,9 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
         .build();
 
     // Create the first commit
-    createCommitWithInserts(cfg, getHoodieWriteClient(cfg), "000", "001", 200, true);
+    try (SparkRDDWriteClient client = getHoodieWriteClient(cfg)) {
+      createCommitWithInserts(cfg, client, "000", "001", 200, true);
+    }
     // Start another inflight commit
     String newCommitTime = "003";
     int numRecords = 100;
@@ -768,7 +790,9 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
     HoodieWriteConfig cfg2 = writeConfigBuilder.build();
 
     // Create the first commit
-    createCommitWithInserts(cfg, getHoodieWriteClient(cfg), "000", "001", 5000, false);
+    try (SparkRDDWriteClient client = getHoodieWriteClient(cfg)) {
+      createCommitWithInserts(cfg, client, "000", "001", 5000, false);
+    }
     // Start another inflight commit
     String newCommitTime1 = "003";
     String newCommitTime2 = "004";
@@ -854,7 +878,9 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
     HoodieWriteConfig cfg2 = writeConfigBuilder.build();
 
     // Create the first commit
-    createCommitWithInserts(cfg, getHoodieWriteClient(cfg), "000", "001", 200, false);
+    try (SparkRDDWriteClient client = getHoodieWriteClient(cfg)) {
+      createCommitWithInserts(cfg, client, "000", "001", 200, false);
+    }
     // Start another inflight commit
     String newCommitTime1 = "003";
     String newCommitTime2 = "004";
@@ -940,14 +966,21 @@ public class TestHoodieClientMultiWriter extends HoodieClientTestBase {
     return result;
   }
 
-  public static Stream<Arguments> configParams() {
+  public static Stream<Arguments> configParamsTimelineServerBased() {
     Object[][] data =
         new Object[][] {
-            {"COPY_ON_WRITE", MarkerType.TIMELINE_SERVER_BASED.name(), AsyncTimelineServerBasedDetectionStrategy.class.getName()},
-            {"MERGE_ON_READ", MarkerType.TIMELINE_SERVER_BASED.name(), AsyncTimelineServerBasedDetectionStrategy.class.getName()},
-            {"MERGE_ON_READ", MarkerType.DIRECT.name(), SimpleDirectMarkerBasedDetectionStrategy.class.getName()},
-            {"COPY_ON_WRITE", MarkerType.DIRECT.name(), SimpleDirectMarkerBasedDetectionStrategy.class.getName()},
-            {"COPY_ON_WRITE", MarkerType.DIRECT.name(), SimpleTransactionDirectMarkerBasedDetectionStrategy.class.getName()}
+            {"COPY_ON_WRITE", AsyncTimelineServerBasedDetectionStrategy.class.getName()},
+            {"MERGE_ON_READ", AsyncTimelineServerBasedDetectionStrategy.class.getName()}
+        };
+    return Stream.of(data).map(Arguments::of);
+  }
+
+  public static Stream<Arguments> configParamsDirectBased() {
+    Object[][] data =
+        new Object[][] {
+            {"MERGE_ON_READ", SimpleDirectMarkerBasedDetectionStrategy.class.getName()},
+            {"COPY_ON_WRITE", SimpleDirectMarkerBasedDetectionStrategy.class.getName()},
+            {"COPY_ON_WRITE", SimpleTransactionDirectMarkerBasedDetectionStrategy.class.getName()}
         };
     return Stream.of(data).map(Arguments::of);
   }

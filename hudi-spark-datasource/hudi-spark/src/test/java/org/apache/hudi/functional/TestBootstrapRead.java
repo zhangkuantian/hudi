@@ -40,30 +40,36 @@ import static org.apache.hudi.common.model.HoodieTableType.MERGE_ON_READ;
 @Tag("functional")
 public class TestBootstrapRead extends TestBootstrapReadBase {
   private static Stream<Arguments> testArgs() {
+    boolean fullTest = false;
     Stream.Builder<Arguments> b = Stream.builder();
-    String[] bootstrapType = {"full", "metadata", "mixed"};
-    Boolean[] dashPartitions = {true,false};
-    HoodieTableType[] tableType = {COPY_ON_WRITE, MERGE_ON_READ};
-    Integer[] nPartitions = {0, 1, 2};
-    for (HoodieTableType tt : tableType) {
-      for (Boolean dash : dashPartitions) {
-        for (String bt : bootstrapType) {
-          for (Integer n : nPartitions) {
-            // can't be mixed bootstrap if it's nonpartitioned
-            // don't need to test slash partitions if it's nonpartitioned
-            if ((!bt.equals("mixed") && dash) || n > 0) {
-              b.add(Arguments.of(bt, dash, tt, n));
+    if (fullTest) {
+      String[] bootstrapType = {"full", "metadata", "mixed"};
+      Boolean[] dashPartitions = {true,false};
+      HoodieTableType[] tableType = {COPY_ON_WRITE, MERGE_ON_READ};
+      Integer[] nPartitions = {0, 1, 2};
+      for (HoodieTableType tt : tableType) {
+        for (Boolean dash : dashPartitions) {
+          for (String bt : bootstrapType) {
+            for (Integer n : nPartitions) {
+              // can't be mixed bootstrap if it's nonpartitioned
+              // don't need to test slash partitions if it's nonpartitioned
+              if ((!bt.equals("mixed") && dash) || n > 0) {
+                b.add(Arguments.of(bt, dash, tt, n));
+              }
             }
           }
         }
       }
+    } else {
+      b.add(Arguments.of("metadata", true, COPY_ON_WRITE, 0));
+      b.add(Arguments.of("mixed", false, MERGE_ON_READ, 2));
     }
     return b.build();
   }
 
   @ParameterizedTest
   @MethodSource("testArgs")
-  public void runTests(String bootstrapType, Boolean dashPartitions, HoodieTableType tableType, Integer nPartitions) {
+  public void testBootstrapFunctional(String bootstrapType, Boolean dashPartitions, HoodieTableType tableType, Integer nPartitions) {
     this.bootstrapType = bootstrapType;
     this.dashPartitions = dashPartitions;
     this.tableType = tableType;

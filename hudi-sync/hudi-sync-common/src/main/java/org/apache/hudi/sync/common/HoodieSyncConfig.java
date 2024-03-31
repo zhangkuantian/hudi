@@ -24,11 +24,11 @@ import org.apache.hudi.common.config.ConfigProperty;
 import org.apache.hudi.common.config.HoodieConfig;
 import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.config.TypedProperties;
-import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.util.ConfigUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.keygen.constant.KeyGeneratorOptions;
 
 import com.beust.jcommander.Parameter;
@@ -79,7 +79,13 @@ public class HoodieSyncConfig extends HoodieConfig {
   public static final ConfigProperty<String> META_SYNC_DATABASE_NAME = ConfigProperty
       .key("hoodie.datasource.hive_sync.database")
       .defaultValue("default")
-      .withInferFunction(cfg -> Option.ofNullable(cfg.getString(DATABASE_NAME)))
+      .withInferFunction(cfg -> {
+        String databaseName = cfg.getString(DATABASE_NAME);
+        // Need to check if database name is empty as Option won't check it
+        return StringUtils.isNullOrEmpty(databaseName)
+            ? Option.empty()
+            : Option.of(databaseName);
+      })
       .markAdvanced()
       .withDocumentation("The name of the destination database that we should sync the hudi table to.");
 
@@ -141,13 +147,6 @@ public class HoodieSyncConfig extends HoodieConfig {
       .withDocumentation("Class which implements PartitionValueExtractor to extract the partition values, "
           + "default 'org.apache.hudi.hive.MultiPartKeysValueExtractor'.");
 
-  public static final ConfigProperty<String> META_SYNC_ASSUME_DATE_PARTITION = ConfigProperty
-      .key("hoodie.datasource.hive_sync.assume_date_partitioning")
-      .defaultValue(HoodieMetadataConfig.ASSUME_DATE_PARTITIONING.defaultValue())
-      .withInferFunction(cfg -> Option.ofNullable(cfg.getString(HoodieMetadataConfig.ASSUME_DATE_PARTITIONING)))
-      .markAdvanced()
-      .withDocumentation("Assume partitioning is yyyy/MM/dd");
-
   public static final ConfigProperty<Boolean> META_SYNC_DECODE_PARTITION = ConfigProperty
       .key("hoodie.meta.sync.decode_partition")
       .defaultValue(false)
@@ -175,7 +174,7 @@ public class HoodieSyncConfig extends HoodieConfig {
       .withDocumentation("The spark version used when syncing with a metastore.");
   public static final ConfigProperty<String> META_SYNC_SNAPSHOT_WITH_TABLE_NAME = ConfigProperty
           .key("hoodie.meta.sync.sync_snapshot_with_table_name")
-          .defaultValue("false")
+          .defaultValue("true")
           .markAdvanced()
           .sinceVersion("0.14.0")
           .withDocumentation("sync meta info to origin table if enable");
@@ -189,6 +188,15 @@ public class HoodieSyncConfig extends HoodieConfig {
           + "only added, changed, and deleted partitions based on the commit metadata. If set to "
           + "`false`, the meta sync executes a full partition sync operation when partitions are "
           + "lost.");
+
+  public static final ConfigProperty<Boolean> META_SYNC_NO_PARTITION_METADATA = ConfigProperty
+      .key("hoodie.meta.sync.no_partition_metadata")
+      .defaultValue(false)
+      .sinceVersion("1.0.0")
+      .markAdvanced()
+      .withDocumentation("If true, the partition metadata will not be synced to the metastore. "
+          + "This is useful when the partition metadata is large, and the partition info can be "
+          + "obtained from Hudi's internal metadata table. Note, " + HoodieMetadataConfig.ENABLE + " must be set to true.");
 
   private Configuration hadoopConf;
 
@@ -216,11 +224,15 @@ public class HoodieSyncConfig extends HoodieConfig {
   }
 
   public FileSystem getHadoopFileSystem() {
-    return FSUtils.getFs(getString(META_SYNC_BASE_PATH), getHadoopConf());
+    return HadoopFSUtils.getFs(getString(META_SYNC_BASE_PATH), getHadoopConf());
   }
 
   public String getAbsoluteBasePath() {
     return getString(META_SYNC_BASE_PATH);
+  }
+
+  public Boolean shouldNotSyncPartitionMetadata() {
+    return getBooleanOrDefault(META_SYNC_NO_PARTITION_METADATA);
   }
 
   @Override
@@ -242,9 +254,6 @@ public class HoodieSyncConfig extends HoodieConfig {
     @Parameter(names = "--partition-value-extractor", description = "Class which implements PartitionValueExtractor "
         + "to extract the partition values from HDFS path")
     public String partitionValueExtractorClass;
-    @Parameter(names = {"--assume-date-partitioning"}, description = "Assume standard yyyy/mm/dd partitioning, this"
-        + " exists to support backward compatibility. If you use hoodie 0.3.x, do not set this parameter")
-    public Boolean assumeDatePartitioning;
     @Parameter(names = {"--decode-partition"}, description = "Decode the partition value if the partition has encoded during writing")
     public Boolean decodePartition;
     @Parameter(names = {"--use-file-listing-from-metadata"}, description = "Fetch file listing from Hudi's metadata")
@@ -259,6 +268,9 @@ public class HoodieSyncConfig extends HoodieConfig {
             + "`false`, the meta sync executes a full partition sync operation when partitions are "
             + "lost.")
     public Boolean syncIncremental;
+
+    @Parameter(names = {"--sync-no-partition-metadata"}, description = "do not sync partition metadata info to the catalog")
+    public Boolean shouldNotSyncPartitionMetadata;
 
     @Parameter(names = {"--help", "-h"}, help = true)
     public boolean help = false;
@@ -275,12 +287,12 @@ public class HoodieSyncConfig extends HoodieConfig {
       props.setPropertyIfNonNull(META_SYNC_BASE_FILE_FORMAT.key(), baseFileFormat);
       props.setPropertyIfNonNull(META_SYNC_PARTITION_FIELDS.key(), StringUtils.join(",", partitionFields));
       props.setPropertyIfNonNull(META_SYNC_PARTITION_EXTRACTOR_CLASS.key(), partitionValueExtractorClass);
-      props.setPropertyIfNonNull(META_SYNC_ASSUME_DATE_PARTITION.key(), assumeDatePartitioning);
       props.setPropertyIfNonNull(META_SYNC_DECODE_PARTITION.key(), decodePartition);
       props.setPropertyIfNonNull(META_SYNC_USE_FILE_LISTING_FROM_METADATA.key(), useFileListingFromMetadata);
       props.setPropertyIfNonNull(META_SYNC_CONDITIONAL_SYNC.key(), isConditionalSync);
       props.setPropertyIfNonNull(META_SYNC_SPARK_VERSION.key(), sparkVersion);
       props.setPropertyIfNonNull(META_SYNC_INCREMENTAL.key(), syncIncremental);
+      props.setPropertyIfNonNull(META_SYNC_NO_PARTITION_METADATA.key(), shouldNotSyncPartitionMetadata);
       return props;
     }
   }

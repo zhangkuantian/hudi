@@ -62,10 +62,8 @@ import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.testutils.HoodieTestTable;
 import org.apache.hudi.common.testutils.HoodieTestUtils;
 import org.apache.hudi.common.testutils.RawTripTestPayload;
-import org.apache.hudi.common.util.BaseFileUtils;
 import org.apache.hudi.common.util.ClusteringUtils;
 import org.apache.hudi.common.util.CollectionUtils;
-import org.apache.hudi.common.util.FileIOUtils;
 import org.apache.hudi.common.util.MarkerUtils;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
@@ -96,7 +94,6 @@ import org.apache.hudi.table.marker.WriteMarkersFactory;
 import org.apache.hudi.testutils.HoodieJavaClientTestHarness;
 
 import org.apache.avro.generic.GenericRecord;
-import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
 import org.jetbrains.annotations.NotNull;
@@ -150,16 +147,10 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
 
   private static final String CLUSTERING_FAILURE = "CLUSTERING FAILURE";
 
-  private static Stream<Arguments> populateMetaFieldsParams() {
-    return Arrays.stream(new Boolean[][] {{true}, {false}}).map(Arguments::of);
-  }
-
   private static Stream<Arguments> rollbackAfterConsistencyCheckFailureParams() {
     return Stream.of(
-        Arguments.of(true, true),
-        Arguments.of(true, false),
-        Arguments.of(false, true),
-        Arguments.of(false, false)
+        Arguments.of(true),
+        Arguments.of(false)
     );
   }
 
@@ -173,56 +164,50 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
   /**
    * Test Auto Commit behavior for HoodieWriteClient insert API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testAutoCommitOnInsert(boolean populateMetaFields) throws Exception {
-    testAutoCommit(HoodieJavaWriteClient::insert, false, populateMetaFields);
+  @Test
+  public void testAutoCommitOnInsert() throws Exception {
+    testAutoCommit(HoodieJavaWriteClient::insert, false, true);
   }
 
   /**
    * Test Auto Commit behavior for HoodieWriteClient insertPrepped API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testAutoCommitOnInsertPrepped(boolean populateMetaFields) throws Exception {
-    testAutoCommit(HoodieJavaWriteClient::insertPreppedRecords, true, populateMetaFields);
+  @Test
+  public void testAutoCommitOnInsertPrepped() throws Exception {
+    testAutoCommit(HoodieJavaWriteClient::insertPreppedRecords, true, true);
   }
 
   /**
    * Test Auto Commit behavior for HoodieWriteClient upsert API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testAutoCommitOnUpsert(boolean populateMetaFields) throws Exception {
-    testAutoCommit(HoodieJavaWriteClient::upsert, false, populateMetaFields);
+  @Test
+  public void testAutoCommitOnUpsert() throws Exception {
+    testAutoCommit(HoodieJavaWriteClient::upsert, false, true);
   }
 
   /**
    * Test Auto Commit behavior for HoodieWriteClient upsert Prepped API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testAutoCommitOnUpsertPrepped(boolean populateMetaFields) throws Exception {
-    testAutoCommit(HoodieJavaWriteClient::upsertPreppedRecords, true, populateMetaFields);
+  @Test
+  public void testAutoCommitOnUpsertPrepped() throws Exception {
+    testAutoCommit(HoodieJavaWriteClient::upsertPreppedRecords, true, true);
   }
 
   /**
    * Test Auto Commit behavior for HoodieWriteClient bulk-insert API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testAutoCommitOnBulkInsert(boolean populateMetaFields) throws Exception {
-    testAutoCommit(HoodieJavaWriteClient::bulkInsert, false, populateMetaFields);
+  @Test
+  public void testAutoCommitOnBulkInsert() throws Exception {
+    testAutoCommit(HoodieJavaWriteClient::bulkInsert, false, true);
   }
 
   /**
    * Test Auto Commit behavior for HoodieWriteClient bulk-insert prepped API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testAutoCommitOnBulkInsertPrepped(boolean populateMetaFields) throws Exception {
+  @Test
+  public void testAutoCommitOnBulkInsertPrepped() throws Exception {
     testAutoCommit((writeClient, recordRDD, instantTime) -> writeClient.bulkInsertPreppedRecords(recordRDD, instantTime,
-        Option.empty()), true, populateMetaFields);
+        Option.empty()), true, true);
   }
 
   /**
@@ -264,37 +249,33 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
   /**
    * Test De-duplication behavior for HoodieWriteClient insert API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testDeduplicationOnInsert(boolean populateMetaFields) throws Exception {
-    testDeduplication(HoodieJavaWriteClient::insert, populateMetaFields);
+  @Test
+  public void testDeduplicationOnInsert() throws Exception {
+    testDeduplication(HoodieJavaWriteClient::insert, true);
   }
 
   /**
    * Test De-duplication behavior for HoodieWriteClient insert API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testDeduplicationKeepOperationFieldOnInsert(boolean populateMetaFields) throws Exception {
-    testDeduplicationKeepOperation(HoodieJavaWriteClient::insert, populateMetaFields);
+  @Test
+  public void testDeduplicationKeepOperationFieldOnInsert() throws Exception {
+    testDeduplicationKeepOperation(HoodieJavaWriteClient::insert, true);
   }
 
   /**
    * Test De-duplication behavior for HoodieWriteClient bulk-insert API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testDeduplicationOnBulkInsert(boolean populateMetaFields) throws Exception {
-    testDeduplication(HoodieJavaWriteClient::bulkInsert, populateMetaFields);
+  @Test
+  public void testDeduplicationOnBulkInsert() throws Exception {
+    testDeduplication(HoodieJavaWriteClient::bulkInsert, true);
   }
 
   /**
    * Test De-duplication behavior for HoodieWriteClient upsert API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testDeduplicationOnUpsert(boolean populateMetaFields) throws Exception {
-    testDeduplication(HoodieJavaWriteClient::upsert, populateMetaFields);
+  @Test
+  public void testDeduplicationOnUpsert() throws Exception {
+    testDeduplication(HoodieJavaWriteClient::upsert, true);
   }
 
   /**
@@ -436,22 +417,20 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
   /**
    * Test Upsert API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testUpserts(boolean populateMetaFields) throws Exception {
+  @Test
+  public void testUpserts() throws Exception {
     HoodieWriteConfig.Builder cfgBuilder = getConfigBuilder().withRollbackUsingMarkers(true);
-    addConfigsForPopulateMetaFields(cfgBuilder, populateMetaFields);
+    addConfigsForPopulateMetaFields(cfgBuilder, true);
     testUpsertsInternal(cfgBuilder.build(), HoodieJavaWriteClient::upsert, false);
   }
 
   /**
    * Test UpsertPrepped API.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testUpsertsPrepped(boolean populateMetaFields) throws Exception {
+  @Test
+  public void testUpsertsPrepped() throws Exception {
     HoodieWriteConfig.Builder cfgBuilder = getConfigBuilder().withRollbackUsingMarkers(true);
-    addConfigsForPopulateMetaFields(cfgBuilder, populateMetaFields);
+    addConfigsForPopulateMetaFields(cfgBuilder, true);
     testUpsertsInternal(cfgBuilder.build(), HoodieJavaWriteClient::upsertPreppedRecords, true);
   }
 
@@ -568,8 +547,9 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
     Path baseFilePath = new Path(basePathStr, filePath);
     HoodieBaseFile baseFile = new HoodieBaseFile(baseFilePath.toString());
 
+    HoodieMergeHandle handle = null;
     try {
-      HoodieMergeHandle handle = new HoodieMergeHandle(cfg, instantTime, table, new HashMap<>(),
+      handle = new HoodieMergeHandle(cfg, instantTime, table, new HashMap<>(),
           partitionPath, FSUtils.getFileId(baseFilePath.getName()), baseFile, new JavaTaskContextSupplier(),
           config.populateMetaFields() ? Option.empty() :
               Option.of((BaseKeyGenerator) HoodieAvroKeyGeneratorFactory.createKeyGenerator(new TypedProperties(config.getProps()))));
@@ -579,13 +559,19 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
       handle.performMergeDataValidationCheck(writeStatus);
     } catch (HoodieCorruptedDataException e1) {
       fail("Exception not expected because merge validation check is disabled");
+    } finally {
+      if (handle != null) {
+        handle.close();
+      }
     }
 
+    handle = null;
     try {
       final String newInstantTime = "006";
       cfg.getProps().setProperty("hoodie.merge.data.validation.enabled", "true");
       HoodieWriteConfig cfg2 = HoodieWriteConfig.newBuilder().withProps(cfg.getProps()).build();
-      HoodieMergeHandle handle = new HoodieMergeHandle(cfg2, newInstantTime, table, new HashMap<>(),
+      // does the handle need to be closed to clean up the writer it contains?
+      handle = new HoodieMergeHandle(cfg2, newInstantTime, table, new HashMap<>(),
           partitionPath, FSUtils.getFileId(baseFilePath.getName()), baseFile, new JavaTaskContextSupplier(),
           config.populateMetaFields() ? Option.empty() :
               Option.of((BaseKeyGenerator) HoodieAvroKeyGeneratorFactory.createKeyGenerator(new TypedProperties(config.getProps()))));
@@ -596,28 +582,29 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
       fail("The above line should have thrown an exception");
     } catch (HoodieUpsertException e2) {
       // expected
+    } finally {
+      if (handle != null) {
+        handle.close();
+      }
     }
   }
 
   /**
    * Test Insert API for HoodieConcatHandle.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testInsertsWithHoodieConcatHandle(boolean populateMetaFields) throws Exception {
+  @Test
+  public void testInsertsWithHoodieConcatHandle() throws Exception {
     HoodieWriteConfig.Builder cfgBuilder = getConfigBuilder();
-    addConfigsForPopulateMetaFields(cfgBuilder, populateMetaFields);
+    addConfigsForPopulateMetaFields(cfgBuilder, true);
     testHoodieConcatHandle(cfgBuilder.build(), false);
   }
 
   /**
    * Test InsertPrepped API for HoodieConcatHandle.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testInsertsPreppedWithHoodieConcatHandle(boolean populateMetaFields) throws Exception {
+  public void testInsertsPreppedWithHoodieConcatHandle() throws Exception {
     HoodieWriteConfig.Builder cfgBuilder = getConfigBuilder();
-    addConfigsForPopulateMetaFields(cfgBuilder, populateMetaFields);
+    addConfigsForPopulateMetaFields(cfgBuilder, true);
     testHoodieConcatHandle(cfgBuilder.build(), true);
   }
 
@@ -711,11 +698,9 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
   /**
    * Tests deletion of records.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testDeletes(boolean populateMetaFields) throws Exception {
+  public void testDeletes() throws Exception {
     HoodieWriteConfig.Builder cfgBuilder = getConfigBuilder(HoodieFailedWritesCleaningPolicy.LAZY);
-    addConfigsForPopulateMetaFields(cfgBuilder, populateMetaFields);
+    addConfigsForPopulateMetaFields(cfgBuilder, true);
     HoodieJavaWriteClient client = getHoodieWriteClient(cfgBuilder.build());
     /**
      * Write 1 (inserts and deletes) Write actual 200 insert records and ignore 100 delete records
@@ -736,7 +721,7 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
     writeBatch(client, newCommitTime, initCommitTime, Option.empty(), initCommitTime,
         // unused as genFn uses hard-coded number of inserts/updates/deletes
         -1, recordGenFunction, HoodieJavaWriteClient::upsert, true, 200, 200, 1, false,
-        populateMetaFields);
+        true);
 
     /**
      * Write 2 (deletes+writes).
@@ -753,7 +738,7 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
     };
     writeBatch(client, newCommitTime, prevCommitTime, Option.empty(), initCommitTime, 75, recordGenFunction,
         HoodieJavaWriteClient::upsert, true, 25, 175, 2, false,
-        populateMetaFields);
+        true);
   }
 
   /**
@@ -762,11 +747,10 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
    *
    * @throws Exception
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testDeletesForInsertsInSameBatch(boolean populateMetaFields) throws Exception {
+  @Test
+  public void testDeletesForInsertsInSameBatch() throws Exception {
     HoodieWriteConfig.Builder cfgBuilder = getConfigBuilder(HoodieFailedWritesCleaningPolicy.LAZY);
-    addConfigsForPopulateMetaFields(cfgBuilder, populateMetaFields);
+    addConfigsForPopulateMetaFields(cfgBuilder, true);
     HoodieJavaWriteClient client = getHoodieWriteClient(cfgBuilder.build());
     /**
      * Write 200 inserts and issue deletes to a subset(50) of inserts.
@@ -787,7 +771,7 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
 
     writeBatch(client, newCommitTime, initCommitTime, Option.empty(), initCommitTime,
         -1, recordGenFunction, HoodieJavaWriteClient::upsert, true, 150, 150, 1, false,
-        populateMetaFields);
+        true);
   }
 
   @Test
@@ -803,7 +787,7 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
             .withInlineClustering(true).withInlineClusteringNumCommits(2).build());
     try (HoodieJavaWriteClient client = getHoodieWriteClient(cfgBuilder.build())) {
       int numRecords = 200;
-      String newCommitTime = HoodieActiveTimeline.createNewInstantTime();
+      String newCommitTime = client.createNewInstantTime();
       List<HoodieRecord> records1 = dataGen.generateInserts(newCommitTime, numRecords);
       client.startCommitWithTime(newCommitTime);
       List<WriteStatus> statuses = client.insert(records1, newCommitTime);
@@ -834,7 +818,7 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
 
     // setup clustering config.
     HoodieClusteringConfig clusteringConfig = HoodieClusteringConfig.newBuilder().withClusteringMaxNumGroups(10)
-        .withClusteringTargetPartitions(0).withInlineClusteringNumCommits(1).withInlineClustering(false).withScheduleInlineClustering(scheduleInlineClustering)
+        .withClusteringTargetPartitions(0).withAsyncClusteringMaxCommits(1).withInlineClustering(false).withScheduleInlineClustering(scheduleInlineClustering)
         .withClusteringExecutionStrategyClass(JavaSortAndSizeExecutionStrategy.class.getName())
         .withClusteringPlanStrategyClass(JavaSizeBasedClusteringPlanStrategy.class.getName())
         .build();
@@ -844,10 +828,10 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
         .withProps(getPropertiesForKeyGen()).build();
     HoodieJavaWriteClient client = getHoodieWriteClient(config);
     dataGen = new HoodieTestDataGenerator(new String[] {"2015/03/16"});
-    String commitTime1 = HoodieActiveTimeline.createNewInstantTime();
+    String commitTime1 = client.createNewInstantTime();
     List<HoodieRecord> records1 = dataGen.generateInserts(commitTime1, 200);
     client.startCommitWithTime(commitTime1);
-    List<WriteStatus> statuses = client.upsert(records1, commitTime1);
+    List<WriteStatus> statuses = client.insert(records1, commitTime1);
     assertNoWriteErrors(statuses);
     client.commit(commitTime1, statuses);
 
@@ -917,14 +901,15 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
     }
 
     dataGen = new HoodieTestDataGenerator(new String[] {partitionPath});
-    String commitTime1 = HoodieActiveTimeline.createNewInstantTime();
+    String commitTime1 = client.createNewInstantTime();
     List<HoodieRecord> records1 = dataGen.generateInserts(commitTime1, 200);
     List<WriteStatus> statuses1 = writeAndVerifyBatch(client, records1, commitTime1, populateMetaFields, failInlineClustering);
     Set<HoodieFileGroupId> fileIds1 = getFileGroupIdsFromWriteStatus(statuses1);
 
-    String commitTime2 = HoodieActiveTimeline.createNewInstantTime();
+    String commitTime2 = client.createNewInstantTime();
     List<HoodieRecord> records2 = dataGen.generateInserts(commitTime2, 200);
     List<WriteStatus> statuses2 = writeAndVerifyBatch(client, records2, commitTime2, populateMetaFields, failInlineClustering);
+    client.close();
     Set<HoodieFileGroupId> fileIds2 = getFileGroupIdsFromWriteStatus(statuses2);
     Set<HoodieFileGroupId> fileIdsUnion = new HashSet<>(fileIds1);
     fileIdsUnion.addAll(fileIds2);
@@ -958,11 +943,11 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
   }
 
   private HoodieWriteMetadata<List<WriteStatus>> performClustering(HoodieClusteringConfig clusteringConfig,
-                                                                      boolean populateMetaFields,
-                                                                      boolean completeClustering,
-                                                                      String validatorClasses,
-                                                                      String sqlQueryForEqualityValidation, String sqlQueryForSingleResultValidation,
-                                                                      Pair<List<HoodieRecord>, List<String>> allRecords) throws IOException {
+                                                                   boolean populateMetaFields,
+                                                                   boolean completeClustering,
+                                                                   String validatorClasses,
+                                                                   String sqlQueryForEqualityValidation, String sqlQueryForSingleResultValidation,
+                                                                   Pair<List<HoodieRecord>, List<String>> allRecords) throws IOException {
     HoodiePreCommitValidatorConfig validatorConfig = HoodiePreCommitValidatorConfig.newBuilder()
         .withPreCommitValidator(StringUtils.nullToEmpty(validatorClasses))
         .withPrecommitValidatorEqualitySqlQueries(sqlQueryForEqualityValidation)
@@ -1035,7 +1020,7 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
   private Set<String> verifyRecordKeys(List<HoodieRecord> expectedRecords, List<WriteStatus> allStatus, List<GenericRecord> records) {
     for (WriteStatus status : allStatus) {
       Path filePath = new Path(basePath, status.getStat().getPath());
-      records.addAll(BaseFileUtils.getInstance(metaClient).readAvroRecords(hadoopConf, filePath));
+      records.addAll(getFileUtilsInstance(metaClient).readAvroRecords(hadoopConf, filePath));
     }
     Set<String> expectedKeys = recordsToRecordKeySet(expectedRecords);
     assertEquals(records.size(), expectedKeys.size());
@@ -1101,14 +1086,13 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
   /**
    * Test delete with delete api.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testDeletesWithoutInserts(boolean populateMetaFields) {
+  @Test
+  public void testDeletesWithoutInserts() {
     final String testPartitionPath = "2016/09/26";
     final int insertSplitLimit = 100;
     // setup the small file handling params
     HoodieWriteConfig config = getSmallInsertWriteConfig(insertSplitLimit,
-        TRIP_EXAMPLE_SCHEMA, dataGen.getEstimatedFileSizeInBytes(150), populateMetaFields, populateMetaFields
+        TRIP_EXAMPLE_SCHEMA, dataGen.getEstimatedFileSizeInBytes(150), true, true
             ? new Properties() : getPropertiesForKeyGen());
     dataGen = new HoodieTestDataGenerator(new String[] {testPartitionPath});
     HoodieJavaWriteClient client = getHoodieWriteClient(config);
@@ -1125,13 +1109,11 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
   /**
    * Test to ensure commit metadata points to valid files.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testCommitWritesRelativePaths(boolean populateMetaFields) throws Exception {
-
+  @Test
+  public void testCommitWritesRelativePaths() throws Exception {
     HoodieWriteConfig.Builder cfgBuilder = getConfigBuilder().withAutoCommit(false);
-    addConfigsForPopulateMetaFields(cfgBuilder, populateMetaFields);
-    try (HoodieJavaWriteClient client = getHoodieWriteClient(cfgBuilder.build());) {
+    addConfigsForPopulateMetaFields(cfgBuilder, true);
+    try (HoodieJavaWriteClient client = getHoodieWriteClient(cfgBuilder.build())) {
       HoodieTableMetaClient metaClient = HoodieTableMetaClient.builder().setConf(hadoopConf).setBasePath(basePath).build();
       HoodieJavaTable table = HoodieJavaTable.create(cfgBuilder.build(), context, metaClient);
 
@@ -1156,14 +1138,13 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
       Collection<String> commitPathNames = commitMetadata.getFileIdAndFullPaths(new Path(basePath)).values();
 
       // Read from commit file
-      try (FSDataInputStream inputStream = fs.open(testTable.getCommitFilePath(instantTime))) {
-        String everything = FileIOUtils.readAsUTFString(inputStream);
-        HoodieCommitMetadata metadata = HoodieCommitMetadata.fromJsonString(everything, HoodieCommitMetadata.class);
-        HashMap<String, String> paths = metadata.getFileIdAndFullPaths(new Path(basePath));
-        // Compare values in both to make sure they are equal.
-        for (String pathName : paths.values()) {
-          assertTrue(commitPathNames.contains(pathName));
-        }
+      HoodieCommitMetadata metadata = HoodieCommitMetadata.fromBytes(
+          metaClient.reloadActiveTimeline().getInstantDetails(new HoodieInstant(COMPLETED, COMMIT_ACTION, instantTime)).get(),
+          HoodieCommitMetadata.class);
+      HashMap<String, String> paths = metadata.getFileIdAndFullPaths(new Path(basePath));
+      // Compare values in both to make sure they are equal.
+      for (String pathName : paths.values()) {
+        assertTrue(commitPathNames.contains(pathName));
       }
     }
   }
@@ -1171,11 +1152,10 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
   /**
    * Test to ensure commit metadata points to valid files.10.
    */
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testMetadataStatsOnCommit(boolean populateMetaFields) throws Exception {
+  @Test
+  public void testMetadataStatsOnCommit() throws Exception {
     HoodieWriteConfig.Builder cfgBuilder = getConfigBuilder().withAutoCommit(false);
-    addConfigsForPopulateMetaFields(cfgBuilder, populateMetaFields);
+    addConfigsForPopulateMetaFields(cfgBuilder, true);
     HoodieWriteConfig cfg = cfgBuilder.build();
     HoodieJavaWriteClient client = getHoodieWriteClient(cfg);
 
@@ -1190,18 +1170,16 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
         "After explicit commit, commit file should be created");
 
     // Read from commit file
-    try (FSDataInputStream inputStream = fs.open(testTable.getCommitFilePath(instantTime0))) {
-      String everything = FileIOUtils.readAsUTFString(inputStream);
-      HoodieCommitMetadata metadata =
-          HoodieCommitMetadata.fromJsonString(everything, HoodieCommitMetadata.class);
-      int inserts = 0;
-      for (Map.Entry<String, List<HoodieWriteStat>> pstat : metadata.getPartitionToWriteStats().entrySet()) {
-        for (HoodieWriteStat stat : pstat.getValue()) {
-          inserts += stat.getNumInserts();
-        }
+    HoodieCommitMetadata metadata = HoodieCommitMetadata.fromBytes(
+        metaClient.reloadActiveTimeline().getInstantDetails(new HoodieInstant(COMPLETED, COMMIT_ACTION, instantTime0)).get(),
+        HoodieCommitMetadata.class);
+    int inserts = 0;
+    for (Map.Entry<String, List<HoodieWriteStat>> pstat : metadata.getPartitionToWriteStats().entrySet()) {
+      for (HoodieWriteStat stat : pstat.getValue()) {
+        inserts += stat.getNumInserts();
       }
-      assertEquals(200, inserts);
     }
+    assertEquals(200, inserts);
 
     // Update + Inserts such that they just expand file1
     String instantTime1 = "001";
@@ -1215,20 +1193,19 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
         "After explicit commit, commit file should be created");
 
     // Read from commit file
-    try (FSDataInputStream inputStream = fs.open(testTable.getCommitFilePath(instantTime1))) {
-      String everything = FileIOUtils.readAsUTFString(inputStream);
-      HoodieCommitMetadata metadata = HoodieCommitMetadata.fromJsonString(everything, HoodieCommitMetadata.class);
-      int inserts = 0;
-      int upserts = 0;
-      for (Map.Entry<String, List<HoodieWriteStat>> pstat : metadata.getPartitionToWriteStats().entrySet()) {
-        for (HoodieWriteStat stat : pstat.getValue()) {
-          inserts += stat.getNumInserts();
-          upserts += stat.getNumUpdateWrites();
-        }
+    metadata = HoodieCommitMetadata.fromBytes(
+        metaClient.reloadActiveTimeline().getInstantDetails(new HoodieInstant(COMPLETED, COMMIT_ACTION, instantTime1)).get(),
+        HoodieCommitMetadata.class);
+    inserts = 0;
+    int upserts = 0;
+    for (Map.Entry<String, List<HoodieWriteStat>> pstat : metadata.getPartitionToWriteStats().entrySet()) {
+      for (HoodieWriteStat stat : pstat.getValue()) {
+        inserts += stat.getNumInserts();
+        upserts += stat.getNumUpdateWrites();
       }
-      assertEquals(0, inserts);
-      assertEquals(200, upserts);
     }
+    assertEquals(0, inserts);
+    assertEquals(200, upserts);
   }
 
   /**
@@ -1304,18 +1281,16 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
 
   @ParameterizedTest
   @MethodSource("rollbackAfterConsistencyCheckFailureParams")
-  public void testRollbackAfterConsistencyCheckFailureUsingFileList(boolean enableOptimisticConsistencyGuard, boolean populateMetCols) throws Exception {
-    testRollbackAfterConsistencyCheckFailureUsingFileList(false, enableOptimisticConsistencyGuard, populateMetCols);
+  public void testRollbackAfterConsistencyCheckFailureUsingFileList(boolean enableOptimisticConsistencyGuard) throws Exception {
+    testRollbackAfterConsistencyCheckFailureUsingFileList(false, enableOptimisticConsistencyGuard, true);
   }
 
   @ParameterizedTest
   @MethodSource("rollbackAfterConsistencyCheckFailureParams")
-  public void testRollbackAfterConsistencyCheckFailureUsingMarkers(boolean enableOptimisticConsistencyGuard, boolean populateMetCols) throws Exception {
-    testRollbackAfterConsistencyCheckFailureUsingFileList(true, enableOptimisticConsistencyGuard, populateMetCols);
+  public void testRollbackAfterConsistencyCheckFailureUsingMarkers(boolean enableOptimisticConsistencyGuard) throws Exception {
+    testRollbackAfterConsistencyCheckFailureUsingFileList(true, enableOptimisticConsistencyGuard, true);
   }
 
-  //@ParameterizedTest
-  //@MethodSource("rollbackFailedCommitsParams")
   @Test
   public void testRollbackFailedCommits() throws Exception {
     // HoodieFailedWritesCleaningPolicy cleaningPolicy, boolean populateMetaFields
@@ -1358,12 +1333,14 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
       conditionMet = client.getHeartbeatClient().isHeartbeatExpired("300");
       Thread.sleep(2000);
     }
+    client.close();
     client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, populateMetaFields));
     // Perform 1 successful write
     writeBatch(client, "500", "400", Option.of(Arrays.asList("500")), "500",
         100, dataGen::generateInserts, HoodieJavaWriteClient::bulkInsert, false, 100, 300,
         0, true);
     client.clean();
+    client.close();
     HoodieActiveTimeline timeline = metaClient.getActiveTimeline().reload();
     if (cleaningPolicy.isLazy()) {
       assertTrue(
@@ -1395,12 +1372,11 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
     }
   }
 
-  @ParameterizedTest
-  @MethodSource("populateMetaFieldsParams")
-  public void testRollbackFailedCommitsToggleCleaningPolicy(boolean populateMetaFields) throws Exception {
+  @Test
+  public void testRollbackFailedCommitsToggleCleaningPolicy() throws Exception {
     HoodieTestUtils.init(hadoopConf, basePath);
     HoodieFailedWritesCleaningPolicy cleaningPolicy = EAGER;
-    HoodieJavaWriteClient client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, populateMetaFields));
+    HoodieJavaWriteClient client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, true));
     // Perform 1 successful writes to table
     writeBatch(client, "100", "100", Option.of(Arrays.asList("100")), "100",
         100, dataGen::generateInserts, HoodieJavaWriteClient::bulkInsert, false, 100, 300,
@@ -1414,12 +1390,12 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
     // Toggle cleaning policy to LAZY
     cleaningPolicy = HoodieFailedWritesCleaningPolicy.LAZY;
     // Perform 2 failed writes to table
-    client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, populateMetaFields));
+    client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, true));
     writeBatch(client, "300", "200", Option.of(Arrays.asList("300")), "300",
         100, dataGen::generateInserts, HoodieJavaWriteClient::bulkInsert, false, 100, 300,
         0, false);
     client.close();
-    client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, populateMetaFields));
+    client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, true));
     writeBatch(client, "400", "300", Option.of(Arrays.asList("400")), "400",
         100, dataGen::generateInserts, HoodieJavaWriteClient::bulkInsert, false, 100, 300,
         0, false);
@@ -1435,25 +1411,26 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
     assertTrue(timeline.getTimelineOfActions(
         CollectionUtils.createSet(ROLLBACK_ACTION)).countInstants() == 3);
     // Perform 2 failed commits
-    client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, populateMetaFields));
+    client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, true));
     writeBatch(client, "500", "400", Option.of(Arrays.asList("300")), "300",
         100, dataGen::generateInserts, HoodieJavaWriteClient::bulkInsert, false, 100, 300,
         0, false);
     client.close();
-    client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, populateMetaFields));
+    client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, true));
     writeBatch(client, "600", "500", Option.of(Arrays.asList("400")), "400",
         100, dataGen::generateInserts, HoodieJavaWriteClient::bulkInsert, false, 100, 300,
         0, false);
     client.close();
     // Toggle cleaning policy to EAGER
     cleaningPolicy = EAGER;
-    client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, populateMetaFields));
+    client = new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, true));
     client.startCommit();
     timeline = metaClient.getActiveTimeline().reload();
     // since OCC is enabled, hudi auto flips the cleaningPolicy to Lazy.
     assertTrue(timeline.getTimelineOfActions(
         CollectionUtils.createSet(ROLLBACK_ACTION)).countInstants() == 3);
     assertTrue(timeline.getCommitsTimeline().filterCompletedInstants().countInstants() == 1);
+    client.close();
   }
 
   @Test
@@ -1503,6 +1480,7 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
     Future<HoodieCleanMetadata> clean1 = service.submit(() -> new HoodieJavaWriteClient(context, getParallelWritingWriteConfig(cleaningPolicy, true)).clean());
     commit4.get();
     clean1.get();
+    client.close();
     HoodieActiveTimeline timeline = metaClient.getActiveTimeline().reload();
     assertTrue(timeline.getTimelineOfActions(
         CollectionUtils.createSet(ROLLBACK_ACTION)).countInstants() == 2);
@@ -1510,6 +1488,7 @@ public class TestHoodieJavaClientOnCopyOnWriteStorage extends HoodieJavaClientTe
     assertTrue(timeline.getTimelineOfActions(
         CollectionUtils.createSet(CLEAN_ACTION)).countInstants() == 0);
     assertTrue(timeline.getCommitsTimeline().filterCompletedInstants().countInstants() == 3);
+    service.shutdown();
   }
 
   private Pair<Path, List<WriteStatus>> testConsistencyCheck(HoodieTableMetaClient metaClient, String instantTime, boolean enableOptimisticConsistencyGuard)

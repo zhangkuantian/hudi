@@ -27,21 +27,22 @@ import org.apache.hudi.HoodieBaseRelation.BaseFileReader
 import org.apache.hudi.HoodieConversionUtils.{toJavaOption, toScalaOption}
 import org.apache.hudi.HoodieDataSourceHelper.AvroDeserializerSupport
 import org.apache.hudi.LogFileIterator._
-import org.apache.hudi.common.config.{HoodieCommonConfig, HoodieMetadataConfig, TypedProperties}
+import org.apache.hudi.common.config.{HoodieCommonConfig, HoodieMemoryConfig, HoodieMetadataConfig, HoodieReaderConfig, TypedProperties}
 import org.apache.hudi.common.engine.{EngineType, HoodieLocalEngineContext}
 import org.apache.hudi.common.fs.FSUtils
-import org.apache.hudi.common.fs.FSUtils.{buildInlineConf, getRelativePartitionPath}
+import org.apache.hudi.common.fs.FSUtils.getRelativePartitionPath
 import org.apache.hudi.common.model.HoodieRecord.HoodieRecordType
 import org.apache.hudi.common.model._
 import org.apache.hudi.common.table.log.HoodieMergedLogRecordScanner
-import org.apache.hudi.common.util.HoodieRecordUtils
+import org.apache.hudi.common.util.{ConfigUtils, FileIOUtils, HoodieRecordUtils}
 import org.apache.hudi.config.HoodiePayloadConfig
-import org.apache.hudi.hadoop.config.HoodieRealtimeConfig
+import org.apache.hudi.hadoop.fs.HadoopFSUtils
 import org.apache.hudi.hadoop.utils.HoodieRealtimeRecordReaderUtils.getMaxCompactionMemoryInBytes
 import org.apache.hudi.internal.schema.InternalSchema
 import org.apache.hudi.metadata.HoodieTableMetadata.getDataTableBasePathFromMetadataTable
 import org.apache.hudi.metadata.{HoodieBackedTableMetadata, HoodieTableMetadata}
 import org.apache.hudi.util.CachingIterator
+
 import org.apache.spark.sql.HoodieCatalystExpressionUtils.generateUnsafeProjection
 import org.apache.spark.sql.HoodieInternalRowUtils
 import org.apache.spark.sql.catalyst.InternalRow
@@ -49,10 +50,10 @@ import org.apache.spark.sql.catalyst.expressions.Projection
 import org.apache.spark.sql.types.StructType
 
 import java.io.Closeable
+
 import scala.annotation.tailrec
 import scala.collection.JavaConverters._
 import scala.collection.mutable
-import scala.util.Try
 
 /**
  * Provided w/ list of log files, iterates over all of the records stored in
@@ -110,6 +111,29 @@ class LogFileIterator(logFiles: List[HoodieLogFile],
       maxCompactionMemoryInBytes, config, internalSchema)
   }
 
+  private val (hasOperationField, operationFieldPos) = {
+    val operationField = logFileReaderAvroSchema.getField(HoodieRecord.OPERATION_METADATA_FIELD)
+    if (operationField != null) {
+      (true, operationField.pos())
+    } else {
+      (false, -1)
+    }
+  }
+
+  protected def isDeleteOperation(r: InternalRow): Boolean = if (hasOperationField) {
+    val operation = r.getString(operationFieldPos)
+    HoodieOperation.fromName(operation) == HoodieOperation.DELETE
+  } else {
+    false
+  }
+
+  protected def isDeleteOperation(r: GenericRecord): Boolean = if (hasOperationField) {
+    val operation = r.get(operationFieldPos).toString
+    HoodieOperation.fromName(operation) == HoodieOperation.DELETE
+  } else {
+    false
+  }
+
   def logRecordsPairIterator(): Iterator[(String, HoodieRecord[_])] = {
     logRecords.iterator
   }
@@ -136,12 +160,22 @@ class LogFileIterator(logFiles: List[HoodieLogFile],
     logRecordsIterator.hasNext && {
       logRecordsIterator.next() match {
         case Some(r: HoodieAvroIndexedRecord) =>
-          val projectedAvroRecord = requiredSchemaAvroProjection(r.getData.asInstanceOf[GenericRecord])
-          nextRecord = deserialize(projectedAvroRecord)
-          true
+          val data = r.getData.asInstanceOf[GenericRecord]
+          if (isDeleteOperation(data)) {
+            this.hasNextInternal
+          } else {
+            val projectedAvroRecord = requiredSchemaAvroProjection(data)
+            nextRecord = deserialize(projectedAvroRecord)
+            true
+          }
         case Some(r: HoodieSparkRecord) =>
-          nextRecord = requiredSchemaRowProjection(r.getData)
-          true
+          val data = r.getData
+          if (isDeleteOperation(data)) {
+            this.hasNextInternal
+          } else {
+            nextRecord = requiredSchemaRowProjection(data)
+            true
+          }
         case None => this.hasNextInternal
       }
     }
@@ -274,18 +308,27 @@ class RecordMergingFileIterator(logFiles: List[HoodieLogFile],
         val curRecord = new HoodieSparkRecord(curRow, readerSchema)
         val result = recordMerger.merge(curRecord, baseFileReaderAvroSchema, newRecord, logFileReaderAvroSchema, payloadProps)
         toScalaOption(result)
-          .map { r =>
-            val schema = HoodieInternalRowUtils.getCachedSchema(r.getRight)
-            val projection = HoodieInternalRowUtils.getCachedUnsafeProjection(schema, structTypeSchema)
-            projection.apply(r.getLeft.getData.asInstanceOf[InternalRow])
+          .flatMap { r =>
+            val data = r.getLeft.getData.asInstanceOf[InternalRow]
+            if (isDeleteOperation(data)) {
+              None
+            } else {
+              val schema = HoodieInternalRowUtils.getCachedSchema(r.getRight)
+              val projection = HoodieInternalRowUtils.getCachedUnsafeProjection(schema, structTypeSchema)
+              Some(projection.apply(data))
+            }
           }
       case _ =>
         val curRecord = new HoodieAvroIndexedRecord(serialize(curRow))
         val result = recordMerger.merge(curRecord, baseFileReaderAvroSchema, newRecord, logFileReaderAvroSchema, payloadProps)
         toScalaOption(result)
-          .map { r =>
+          .flatMap { r =>
             val avroRecord = r.getLeft.toIndexedRecord(r.getRight, payloadProps).get.getData.asInstanceOf[GenericRecord]
-            deserialize(requiredSchemaAvroProjection(avroRecord))
+            if (isDeleteOperation(avroRecord)) {
+              None
+            } else {
+              Some(deserialize(requiredSchemaAvroProjection(avroRecord)))
+            }
           }
     }
   }
@@ -301,12 +344,13 @@ object LogFileIterator extends SparkAdapterSupport {
               hadoopConf: Configuration,
               internalSchema: InternalSchema = InternalSchema.getEmptyInternalSchema): mutable.Map[String, HoodieRecord[_]] = {
     val tablePath = tableState.tablePath
-    val fs = FSUtils.getFs(tablePath, hadoopConf)
+    val fs = HadoopFSUtils.getFs(tablePath, hadoopConf)
 
     if (HoodieTableMetadata.isMetadataTable(tablePath)) {
       val metadataConfig = HoodieMetadataConfig.newBuilder()
         .fromProperties(tableState.metadataConfig.getProps)
-        .withSpillableMapDir(hadoopConf.get(HoodieRealtimeConfig.SPILLABLE_MAP_BASE_PATH_PROP, HoodieRealtimeConfig.DEFAULT_SPILLABLE_MAP_BASE_PATH))
+        .withSpillableMapDir(hadoopConf.get(HoodieMemoryConfig.SPILLABLE_MAP_BASE_PATH.key(),
+          FileIOUtils.getDefaultSpillableMapBasePath))
         .enable(true).build()
       val dataTableBasePath = getDataTableBasePathFromMetadataTable(tablePath)
       val metadataTable = new HoodieBackedTableMetadata(
@@ -341,18 +385,17 @@ object LogFileIterator extends SparkAdapterSupport {
         //       entailing that table has to have at least one commit
         .withLatestInstantTime(tableState.latestCommitTimestamp.get)
         .withReadBlocksLazily(
-          Try(hadoopConf.get(HoodieRealtimeConfig.COMPACTION_LAZY_BLOCK_READ_ENABLED_PROP,
-            HoodieRealtimeConfig.DEFAULT_COMPACTION_LAZY_BLOCK_READ_ENABLED).toBoolean)
-            .getOrElse(false))
+          ConfigUtils.getBooleanWithAltKeys(hadoopConf,
+            HoodieReaderConfig.COMPACTION_LAZY_BLOCK_READ_ENABLE))
         .withReverseReader(false)
         .withInternalSchema(internalSchema)
         .withBufferSize(
-          hadoopConf.getInt(HoodieRealtimeConfig.MAX_DFS_STREAM_BUFFER_SIZE_PROP,
-            HoodieRealtimeConfig.DEFAULT_MAX_DFS_STREAM_BUFFER_SIZE))
+          hadoopConf.getInt(HoodieMemoryConfig.MAX_DFS_STREAM_BUFFER_SIZE.key(),
+            HoodieMemoryConfig.DEFAULT_MR_MAX_DFS_STREAM_BUFFER_SIZE))
         .withMaxMemorySizeInBytes(maxCompactionMemoryInBytes)
         .withSpillableMapBasePath(
-          hadoopConf.get(HoodieRealtimeConfig.SPILLABLE_MAP_BASE_PATH_PROP,
-            HoodieRealtimeConfig.DEFAULT_SPILLABLE_MAP_BASE_PATH))
+          hadoopConf.get(HoodieMemoryConfig.SPILLABLE_MAP_BASE_PATH.key,
+            FileIOUtils.getDefaultSpillableMapBasePath))
         .withDiskMapType(
           hadoopConf.getEnum(HoodieCommonConfig.SPILLABLE_DISK_MAP_TYPE.key,
             HoodieCommonConfig.SPILLABLE_DISK_MAP_TYPE.defaultValue))

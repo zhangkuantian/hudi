@@ -18,8 +18,8 @@
 
 package org.apache.hudi.testutils;
 
-import org.apache.hudi.client.HoodieTimelineArchiver;
 import org.apache.hudi.client.common.HoodieJavaEngineContext;
+import org.apache.hudi.client.timeline.HoodieTimelineArchiver;
 import org.apache.hudi.common.config.HoodieMetadataConfig;
 import org.apache.hudi.common.config.HoodieStorageConfig;
 import org.apache.hudi.common.model.HoodieFailedWritesCleaningPolicy;
@@ -35,12 +35,12 @@ import org.apache.hudi.config.HoodieCompactionConfig;
 import org.apache.hudi.config.HoodieIndexConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.config.metrics.HoodieMetricsConfig;
-import org.apache.hudi.config.metrics.HoodieMetricsGraphiteConfig;
 import org.apache.hudi.index.HoodieIndex;
 import org.apache.hudi.metadata.HoodieMetadataWriteUtils;
 import org.apache.hudi.metadata.HoodieTableMetadata;
 import org.apache.hudi.metadata.HoodieTableMetadataWriter;
 import org.apache.hudi.metadata.JavaHoodieBackedTableMetadataWriter;
+import org.apache.hudi.metrics.MetricsReporterType;
 import org.apache.hudi.table.HoodieJavaTable;
 import org.apache.hudi.table.HoodieTable;
 
@@ -132,6 +132,9 @@ public class TestHoodieMetadataBase extends HoodieJavaClientTestHarness {
   @AfterEach
   public void clean() throws Exception {
     cleanupResources();
+    if (metadataWriter != null) {
+      metadataWriter.close();
+    }
   }
 
   protected void doWriteInsertAndUpsert(HoodieTestTable testTable, String commit1, String commit2, boolean nonPartitioned) throws Exception {
@@ -293,7 +296,7 @@ public class TestHoodieMetadataBase extends HoodieJavaClientTestHarness {
             .withAutoClean(false).retainCommits(1).retainFileVersions(1)
             .build())
         .withStorageConfig(HoodieStorageConfig.newBuilder().hfileMaxFileSize(1024 * 1024 * 1024).build())
-        .withEmbeddedTimelineServerEnabled(true).forTable("test-trip-table")
+        .withEmbeddedTimelineServerEnabled(false).forTable("test-trip-table")
         .withFileSystemViewConfig(new FileSystemViewStorageConfig.Builder()
             .withEnableBackupForRemoteFileSystemView(false).build())
         .withIndexConfig(HoodieIndexConfig.newBuilder().withIndexType(HoodieIndex.IndexType.BLOOM).build())
@@ -303,9 +306,7 @@ public class TestHoodieMetadataBase extends HoodieJavaClientTestHarness {
             .ignoreSpuriousDeletes(validateMetadataPayloadConsistency)
             .build())
         .withMetricsConfig(HoodieMetricsConfig.newBuilder().on(enableMetrics)
-            .withExecutorMetrics(true).build())
-        .withMetricsGraphiteConfig(HoodieMetricsGraphiteConfig.newBuilder()
-            .usePrefix("unit-test").build())
+            .withExecutorMetrics(enableMetrics).withReporterType(MetricsReporterType.INMEMORY.name()).build())
         .withRollbackUsingMarkers(useRollbackUsingMarkers)
         .withProperties(properties);
   }

@@ -38,6 +38,7 @@ import org.apache.hudi.common.testutils.HoodieTestDataGenerator;
 import org.apache.hudi.common.testutils.RawTripTestPayload;
 import org.apache.hudi.common.util.PartitionPathEncodeUtils;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.keygen.SimpleKeyGenerator;
 import org.apache.hudi.testutils.Assertions;
 
@@ -105,7 +106,7 @@ public class TestRepairsCommand extends CLIFunctionalTestHarness {
   public void init() throws IOException {
     String tableName = tableName();
     tablePath = tablePath(tableName);
-    fs = FSUtils.getFs(tablePath, hadoopConf());
+    fs = HadoopFSUtils.getFs(tablePath, hadoopConf());
 
     // Create table and connect
     new TableCommand().createTable(
@@ -285,7 +286,11 @@ public class TestRepairsCommand extends CLIFunctionalTestHarness {
 
     metaClient.getActiveTimeline().getInstantsAsStream().filter(hoodieInstant -> Integer.parseInt(hoodieInstant.getTimestamp()) % 4 == 0).forEach(hoodieInstant -> {
       metaClient.getActiveTimeline().deleteInstantFileIfExists(hoodieInstant);
-      metaClient.getActiveTimeline().createNewInstant(hoodieInstant);
+      if (hoodieInstant.isCompleted()) {
+        metaClient.getActiveTimeline().createCompleteInstant(hoodieInstant);
+      } else {
+        metaClient.getActiveTimeline().createNewInstant(hoodieInstant);
+      }
     });
 
     final TestLogAppender appender = new TestLogAppender();
@@ -420,7 +425,7 @@ public class TestRepairsCommand extends CLIFunctionalTestHarness {
 
       // all records from old partition should have been migrated to new partition
       totalRecs = sqlContext.read().format("hudi").load(tablePath)
-          .filter(HoodieRecord.PARTITION_PATH_METADATA_FIELD + " == '" + "2016/03/18" + "'").count();
+          .filter(HoodieRecord.PARTITION_PATH_METADATA_FIELD + " == \"" + "2016/03/18" + "\"").count();
       assertEquals(totalRecs, totalRecsInOldPartition);
     }
   }

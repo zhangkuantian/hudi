@@ -290,7 +290,7 @@ public class FlinkOptions extends HoodieConfig {
           + "   log file records(combines the two records with same key for base and log file records), then read the left log file records");
 
   @AdvancedConfig
-  public static final ConfigOption<Boolean> UTC_TIMEZONE = ConfigOptions
+  public static final ConfigOption<Boolean> READ_UTC_TIMEZONE = ConfigOptions
       .key("read.utc-timezone")
       .booleanType()
       .defaultValue(true)
@@ -316,7 +316,7 @@ public class FlinkOptions extends HoodieConfig {
   public static final ConfigOption<Boolean> READ_STREAMING_SKIP_COMPACT = ConfigOptions
       .key("read.streaming.skip_compaction")
       .booleanType()
-      .defaultValue(false)// default read as batch
+      .defaultValue(true)
       .withDescription("Whether to skip compaction instants and avoid reading compacted base files for streaming read to improve read performance.\n"
           + "This option can be used to avoid reading duplicates when changelog mode is enabled, it is a solution to keep data integrity\n");
 
@@ -325,7 +325,7 @@ public class FlinkOptions extends HoodieConfig {
   public static final ConfigOption<Boolean> READ_STREAMING_SKIP_CLUSTERING = ConfigOptions
       .key("read.streaming.skip_clustering")
       .booleanType()
-      .defaultValue(false)
+      .defaultValue(true)
       .withDescription("Whether to skip clustering instants to avoid reading base files of clustering operations for streaming read "
           + "to improve read performance.");
 
@@ -343,12 +343,20 @@ public class FlinkOptions extends HoodieConfig {
       .noDefaultValue()
       .withDescription("End commit instant for reading, the commit time format should be 'yyyyMMddHHmmss'");
 
+  public static final ConfigOption<Integer> READ_COMMITS_LIMIT = ConfigOptions
+      .key("read.commits.limit")
+      .intType()
+      .noDefaultValue()
+      .withDescription("The maximum number of commits allowed to read in each instant check, if it is streaming read, "
+          + "the avg read instants number per-second would be 'read.commits.limit'/'read.streaming.check-interval', by "
+          + "default no limit");
+
   @AdvancedConfig
   public static final ConfigOption<Boolean> READ_DATA_SKIPPING_ENABLED = ConfigOptions
       .key("read.data.skipping.enabled")
       .booleanType()
       .defaultValue(false)
-      .withDescription("Enables data-skipping allowing queries to leverage indexes to reduce the search space by"
+      .withDescription("Enables data-skipping allowing queries to leverage indexes to reduce the search space by "
           + "skipping over files");
 
   // ------------------------------------------------------------------------
@@ -481,6 +489,15 @@ public class FlinkOptions extends HoodieConfig {
   public static final String PARTITION_FORMAT_HOUR = "yyyyMMddHH";
   public static final String PARTITION_FORMAT_DAY = "yyyyMMdd";
   public static final String PARTITION_FORMAT_DASHED_DAY = "yyyy-MM-dd";
+
+  @AdvancedConfig
+  public static final ConfigOption<Boolean> WRITE_UTC_TIMEZONE = ConfigOptions
+        .key("write.utc-timezone")
+        .booleanType()
+        .defaultValue(true)
+        .withDescription("Use UTC timezone or local timezone to the conversion between epoch"
+            + " time and LocalDateTime. Default value is utc timezone for forward compatibility.");
+
   @AdvancedConfig
   public static final ConfigOption<String> PARTITION_FORMAT = ConfigOptions
       .key("write.partition.format")
@@ -665,7 +682,9 @@ public class FlinkOptions extends HoodieConfig {
       .key("compaction.trigger.strategy")
       .stringType()
       .defaultValue(NUM_COMMITS) // default true for MOR write
-      .withDescription("Strategy to trigger compaction, options are 'num_commits': trigger compaction when reach N delta commits;\n"
+      .withDescription("Strategy to trigger compaction, options are "
+          + "'num_commits': trigger compaction when there are at least N delta commits after last completed compaction;\n"
+          + "'num_commits_after_last_request': trigger compaction when there are at least N delta commits after last completed/requested compaction;\n"
           + "'time_elapsed': trigger compaction when time elapsed > N seconds since last compaction;\n"
           + "'num_and_time': trigger compaction when both NUM_COMMITS and TIME_ELAPSED are satisfied;\n"
           + "'num_or_time': trigger compaction when NUM_COMMITS or TIME_ELAPSED is satisfied.\n"

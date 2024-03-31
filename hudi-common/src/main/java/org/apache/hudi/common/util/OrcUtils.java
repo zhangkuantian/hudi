@@ -19,19 +19,21 @@
 package org.apache.hudi.common.util;
 
 import org.apache.hudi.avro.HoodieAvroUtils;
-import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieFileFormat;
 import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.util.collection.ClosableIterator;
+import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.exception.MetadataNotFoundException;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.keygen.BaseKeyGenerator;
 
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
@@ -41,6 +43,7 @@ import org.apache.orc.Reader;
 import org.apache.orc.Reader.Options;
 import org.apache.orc.RecordReader;
 import org.apache.orc.TypeDescription;
+import org.apache.orc.Writer;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -50,10 +53,12 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.apache.hudi.common.util.BinaryUtil.toBytes;
+import static org.apache.hudi.common.util.StringUtils.getUTF8Bytes;
 
 /**
  * Utility functions for ORC files.
@@ -71,7 +76,7 @@ public class OrcUtils extends BaseFileUtils {
   public ClosableIterator<HoodieKey> getHoodieKeyIterator(Configuration configuration, Path filePath) {
     try {
       Configuration conf = new Configuration(configuration);
-      conf.addResource(FSUtils.getFs(filePath.toString(), conf).getConf());
+      conf.addResource(HadoopFSUtils.getFs(filePath.toString(), conf).getConf());
       Reader reader = OrcFile.createReader(filePath, OrcFile.readerOptions(conf));
 
       Schema readSchema = HoodieAvroUtils.getRecordKeyPartitionPathSchema();
@@ -107,7 +112,7 @@ public class OrcUtils extends BaseFileUtils {
    * @return {@link List} of {@link HoodieKey}s fetched from the ORC file
    */
   @Override
-  public List<HoodieKey> fetchHoodieKeys(Configuration configuration, Path filePath) {
+  public List<Pair<HoodieKey, Long>> fetchRecordKeysWithPositions(Configuration configuration, Path filePath) {
     try {
       if (!filePath.getFileSystem(configuration).exists(filePath)) {
         return Collections.emptyList();
@@ -115,15 +120,19 @@ public class OrcUtils extends BaseFileUtils {
     } catch (IOException e) {
       throw new HoodieIOException("Failed to read from ORC file:" + filePath, e);
     }
-    List<HoodieKey> hoodieKeys = new ArrayList<>();
-    try (ClosableIterator<HoodieKey> iterator = getHoodieKeyIterator(configuration, filePath, Option.empty()))  {
-      iterator.forEachRemaining(hoodieKeys::add);
+    List<Pair<HoodieKey, Long>> hoodieKeysAndPositions = new ArrayList<>();
+    long position = 0;
+    try (ClosableIterator<HoodieKey> iterator = getHoodieKeyIterator(configuration, filePath, Option.empty())) {
+      while (iterator.hasNext()) {
+        hoodieKeysAndPositions.add(Pair.of(iterator.next(), position));
+        position++;
+      }
     }
-    return hoodieKeys;
+    return hoodieKeysAndPositions;
   }
 
   @Override
-  public List<HoodieKey> fetchHoodieKeys(Configuration configuration, Path filePath, Option<BaseKeyGenerator> keyGeneratorOpt) {
+  public List<Pair<HoodieKey, Long>> fetchRecordKeysWithPositions(Configuration configuration, Path filePath, Option<BaseKeyGenerator> keyGeneratorOpt) {
     throw new UnsupportedOperationException("Custom key generator is not supported yet");
   }
 
@@ -171,18 +180,19 @@ public class OrcUtils extends BaseFileUtils {
    * Read the rowKey list matching the given filter, from the given ORC file. If the filter is empty, then this will
    * return all the rowkeys.
    *
-   * @param conf configuration to build fs object.
-   * @param filePath      The ORC file path.
-   * @param filter        record keys filter
-   * @return Set Set of row keys matching candidateRecordKeys
+   * @param conf     configuration to build fs object.
+   * @param filePath The ORC file path.
+   * @param filter   record keys filter
+   * @return Set Set of pairs of row key and position matching candidateRecordKeys
    */
   @Override
-  public Set<String> filterRowKeys(Configuration conf, Path filePath, Set<String> filter)
+  public Set<Pair<String, Long>> filterRowKeys(Configuration conf, Path filePath, Set<String> filter)
       throws HoodieIOException {
+    long rowPosition = 0;
     try (Reader reader = OrcFile.createReader(filePath, OrcFile.readerOptions(conf));) {
       TypeDescription schema = reader.getSchema();
       try (RecordReader recordReader = reader.rows(new Options(conf).schema(schema))) {
-        Set<String> filteredRowKeys = new HashSet<>();
+        Set<Pair<String, Long>> filteredRowKeys = new HashSet<>();
         List<String> fieldNames = schema.getFieldNames();
         VectorizedRowBatch batch = schema.createRowBatch();
 
@@ -202,8 +212,9 @@ public class OrcUtils extends BaseFileUtils {
           for (int i = 0; i < batch.size; i++) {
             String rowKey = rowKeys.toString(i);
             if (filter.isEmpty() || filter.contains(rowKey)) {
-              filteredRowKeys.add(rowKey);
+              filteredRowKeys.add(Pair.of(rowKey, rowPosition));
             }
+            rowPosition++;
           }
         }
         return filteredRowKeys;
@@ -263,6 +274,20 @@ public class OrcUtils extends BaseFileUtils {
       return reader.getNumberOfRows();
     } catch (IOException io) {
       throw new HoodieIOException("Unable to get row count for ORC file:" + orcFilePath, io);
+    }
+  }
+
+  @Override
+  public void writeMetaFile(FileSystem fs, Path filePath, Properties props) throws IOException {
+    // Since we are only interested in saving metadata to the footer, the schema, blocksizes and other
+    // parameters are not important.
+    Schema schema = HoodieAvroUtils.getRecordKeySchema();
+    OrcFile.WriterOptions writerOptions = OrcFile.writerOptions(fs.getConf()).fileSystem(fs)
+        .setSchema(AvroOrcUtils.createOrcSchema(schema));
+    try (Writer writer = OrcFile.createWriter(filePath, writerOptions)) {
+      for (String key : props.stringPropertyNames()) {
+        writer.addUserMetadata(key, ByteBuffer.wrap(getUTF8Bytes(props.getProperty(key))));
+      }
     }
   }
 }

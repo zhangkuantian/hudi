@@ -17,44 +17,48 @@
 
 package org.apache.hudi
 
-import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.Path
 import org.apache.hudi.DataSourceReadOptions.{FILE_INDEX_LISTING_MODE_EAGER, FILE_INDEX_LISTING_MODE_LAZY, QUERY_TYPE, QUERY_TYPE_SNAPSHOT_OPT_VAL}
 import org.apache.hudi.DataSourceWriteOptions._
 import org.apache.hudi.HoodieConversionUtils.toJavaOption
 import org.apache.hudi.HoodieFileIndex.DataSkippingFailureMode
 import org.apache.hudi.client.HoodieJavaWriteClient
 import org.apache.hudi.client.common.HoodieJavaEngineContext
-import org.apache.hudi.common.config.TimestampKeyGeneratorConfig.{TIMESTAMP_INPUT_DATE_FORMAT, TIMESTAMP_OUTPUT_DATE_FORMAT, TIMESTAMP_TYPE_FIELD}
 import org.apache.hudi.common.config.{HoodieMetadataConfig, HoodieStorageConfig}
+import org.apache.hudi.common.config.TimestampKeyGeneratorConfig.{TIMESTAMP_INPUT_DATE_FORMAT, TIMESTAMP_OUTPUT_DATE_FORMAT, TIMESTAMP_TYPE_FIELD}
 import org.apache.hudi.common.engine.EngineType
 import org.apache.hudi.common.fs.FSUtils
-import org.apache.hudi.common.model.{HoodieRecord, HoodieTableType}
-import org.apache.hudi.common.table.view.HoodieTableFileSystemView
+import org.apache.hudi.common.model.{HoodieBaseFile, HoodieRecord, HoodieTableType}
 import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient}
+import org.apache.hudi.common.table.view.HoodieTableFileSystemView
+import org.apache.hudi.common.testutils.{HoodieTestDataGenerator, HoodieTestUtils}
 import org.apache.hudi.common.testutils.HoodieTestTable.makeNewCommitTime
 import org.apache.hudi.common.testutils.RawTripTestPayload.recordsToStrings
-import org.apache.hudi.common.testutils.{HoodieTestDataGenerator, HoodieTestUtils}
 import org.apache.hudi.common.util.PartitionPathEncodeUtils
 import org.apache.hudi.common.util.StringUtils.isNullOrEmpty
 import org.apache.hudi.config.HoodieWriteConfig
+import org.apache.hudi.exception.HoodieException
 import org.apache.hudi.keygen.TimestampBasedAvroKeyGenerator.TimestampType
 import org.apache.hudi.metadata.HoodieTableMetadata
+import org.apache.hudi.storage.StoragePath
 import org.apache.hudi.testutils.HoodieSparkClientTestBase
 import org.apache.hudi.util.JFunction
+
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, EqualTo, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.execution.datasources.{NoopCache, PartitionDirectory}
 import org.apache.spark.sql.functions.{lit, struct}
 import org.apache.spark.sql.hudi.HoodieSparkSessionExtension
 import org.apache.spark.sql.types.{IntegerType, StringType}
-import org.junit.jupiter.api.Assertions.{assertEquals, assertTrue}
 import org.junit.jupiter.api.{BeforeEach, Test}
+import org.junit.jupiter.api.Assertions.{assertEquals, assertTrue}
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.{Arguments, CsvSource, MethodSource, ValueSource}
 
 import java.util.Properties
 import java.util.function.Consumer
+
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
 import scala.util.Random
@@ -85,13 +89,9 @@ class TestHoodieFileIndex extends HoodieSparkClientTestBase with ScalaAssertionS
   @BeforeEach
   override def setUp() {
     setTableName("hoodie_test")
+    super.setUp()
     initPath()
-    initSparkContexts()
     spark = sqlContext.sparkSession
-    initTestDataGenerator()
-    initFileSystem()
-    initMetaClient()
-
     queryOpts = queryOpts ++ Map("path" -> basePath)
   }
 
@@ -194,6 +194,7 @@ class TestHoodieFileIndex extends HoodieSparkClientTestBase with ScalaAssertionS
 
     val fileIndex = HoodieFileIndex(spark, metaClient, None, queryOpts)
     assertEquals("partition_path", fileIndex.partitionSchema.fields.map(_.name).mkString(","))
+    writeClient.close()
   }
 
   @ParameterizedTest
@@ -240,6 +241,67 @@ class TestHoodieFileIndex extends HoodieSparkClientTestBase with ScalaAssertionS
       .sorted
 
     assertEquals(List("2021/03/08", "2021/03/09"), prunedPartitions)
+  }
+
+  @ParameterizedTest
+  @CsvSource(value = Array("lazy,true", "lazy,false",
+    "eager,true", "eager,false"))
+  def testIndexRefreshesFileSlices(listingModeOverride: String,
+                                   useMetadataTable: Boolean): Unit = {
+    def getDistinctCommitTimeFromAllFilesInIndex(files: Seq[PartitionDirectory]): Seq[String] = {
+      files.flatMap(_.files).map(fileStatus => new HoodieBaseFile(fileStatus.getPath.toString)).map(_.getCommitTime).distinct
+    }
+
+    val r = new Random(0xDEED)
+    // partition column values are [0, 5)
+    val tuples = for (i <- 1 to 1000) yield (r.nextString(1000), r.nextInt(5), r.nextString(1000))
+
+    val writeOpts = commonOpts ++ Map(HoodieMetadataConfig.ENABLE.key -> useMetadataTable.toString)
+    val _spark = spark
+    import _spark.implicits._
+    val inputDF = tuples.toDF("_row_key", "partition", "timestamp")
+    inputDF
+      .write
+      .format("hudi")
+      .options(writeOpts)
+      .option(DataSourceWriteOptions.OPERATION.key, DataSourceWriteOptions.UPSERT_OPERATION_OPT_VAL)
+      .mode(SaveMode.Overwrite)
+      .save(basePath)
+
+    val readOpts = queryOpts ++ Map(
+      HoodieMetadataConfig.ENABLE.key -> useMetadataTable.toString,
+      DataSourceReadOptions.FILE_INDEX_LISTING_MODE_OVERRIDE.key -> listingModeOverride
+    )
+
+    metaClient = HoodieTableMetaClient.reload(metaClient)
+    val fileIndexFirstWrite = HoodieFileIndex(spark, metaClient, None, readOpts)
+
+    val listFilesAfterFirstWrite = fileIndexFirstWrite.listFiles(Nil, Nil)
+    val distinctListOfCommitTimesAfterFirstWrite = getDistinctCommitTimeFromAllFilesInIndex(listFilesAfterFirstWrite)
+    val firstWriteCommitTime = metaClient.getActiveTimeline.filterCompletedInstants().lastInstant().get().getTimestamp
+    assertEquals(1, distinctListOfCommitTimesAfterFirstWrite.size, "Should have only one commit")
+    assertEquals(firstWriteCommitTime, distinctListOfCommitTimesAfterFirstWrite.head, "All files should belong to the first existing commit")
+
+    val nextBatch = for (
+      i <- 0 to 4
+    ) yield(r.nextString(1000), i, r.nextString(1000))
+
+    nextBatch.toDF("_row_key", "partition", "timestamp")
+      .write
+      .format("hudi")
+      .options(writeOpts)
+      .option(DataSourceWriteOptions.OPERATION.key, DataSourceWriteOptions.UPSERT_OPERATION_OPT_VAL)
+      .mode(SaveMode.Append)
+      .save(basePath)
+
+    fileIndexFirstWrite.refresh()
+    val fileSlicesAfterSecondWrite = fileIndexFirstWrite.listFiles(Nil, Nil)
+    val distinctListOfCommitTimesAfterSecondWrite = getDistinctCommitTimeFromAllFilesInIndex(fileSlicesAfterSecondWrite)
+    metaClient = HoodieTableMetaClient.reload(metaClient)
+    val lastCommitTime = metaClient.getActiveTimeline.filterCompletedInstants().lastInstant().get().getTimestamp
+
+    assertEquals(1, distinctListOfCommitTimesAfterSecondWrite.size, "All basefiles affected so all have same commit time")
+    assertEquals(lastCommitTime, distinctListOfCommitTimesAfterSecondWrite.head, "All files should be of second commit after index refresh")
   }
 
   @ParameterizedTest
@@ -324,21 +386,29 @@ class TestHoodieFileIndex extends HoodieSparkClientTestBase with ScalaAssertionS
         EqualTo(attribute("dt"), literal("2021/03/01")),
         EqualTo(attribute("hh"), literal("10"))
       )
-      val partitionAndFilesNoPruning = fileIndex.listFiles(Seq(partitionFilter2), Seq.empty)
+      // NOTE: That if file-index is in lazy-listing mode and we can't parse partition values, there's no way
+      //       to recover from this since Spark by default have to inject partition values parsed from the partition paths.
+      if (listingModeOverride == DataSourceReadOptions.FILE_INDEX_LISTING_MODE_LAZY) {
+        assertThrows(classOf[HoodieException]) {
+          fileIndex.listFiles(Seq(partitionFilter2), Seq.empty)
+        }
+      } else {
+        val partitionAndFilesNoPruning = fileIndex.listFiles(Seq(partitionFilter2), Seq.empty)
 
-      assertEquals(1, partitionAndFilesNoPruning.size)
-      // The partition prune would not work for this case, so the partition value it
-      // returns is a InternalRow.empty.
-      assertTrue(partitionAndFilesNoPruning.forall(_.values.numFields == 0))
-      // The returned file size should equal to the whole file size in all the partition paths.
-      assertEquals(getFileCountInPartitionPaths("2021/03/01/10", "2021/03/02/10"),
-        partitionAndFilesNoPruning.flatMap(_.files).length)
+        assertEquals(1, partitionAndFilesNoPruning.size)
+        // The partition prune would not work for this case, so the partition value it
+        // returns is a InternalRow.empty.
+        assertTrue(partitionAndFilesNoPruning.forall(_.values.numFields == 0))
+        // The returned file size should equal to the whole file size in all the partition paths.
+        assertEquals(getFileCountInPartitionPaths("2021/03/01/10", "2021/03/02/10"),
+          partitionAndFilesNoPruning.flatMap(_.files).length)
 
-      val readDF = spark.read.format("hudi").options(readerOpts).load()
+        val readDF = spark.read.format("hudi").options(readerOpts).load()
 
-      assertEquals(10, readDF.count())
-      // There are 5 rows in the  dt = 2021/03/01 and hh = 10
-      assertEquals(5, readDF.filter("dt = '2021/03/01' and hh ='10'").count())
+        assertEquals(10, readDF.count())
+        // There are 5 rows in the  dt = 2021/03/01 and hh = 10
+        assertEquals(5, readDF.filter("dt = '2021/03/01' and hh ='10'").count())
+      }
     }
 
     {
@@ -421,7 +491,7 @@ class TestHoodieFileIndex extends HoodieSparkClientTestBase with ScalaAssertionS
     val partitionAndFilesAfterPrune = fileIndex.listFiles(Seq(partitionFilters), Seq.empty)
     assertEquals(1, partitionAndFilesAfterPrune.size)
 
-    assertTrue(fileIndex.areAllPartitionPathsCached())
+    assertEquals(fileIndex.areAllPartitionPathsCached(), !complexExpressionPushDown)
 
     val PartitionDirectory(partitionActualValues, filesAfterPrune) = partitionAndFilesAfterPrune.head
     val partitionExpectValues = Seq("default", "2021-03-01", "5", "CN")
@@ -504,7 +574,8 @@ class TestHoodieFileIndex extends HoodieSparkClientTestBase with ScalaAssertionS
       DataSourceWriteOptions.OPERATION.key -> DataSourceWriteOptions.INSERT_OPERATION_OPT_VAL,
       HoodieMetadataConfig.ENABLE.key -> enableMetadataTable.toString,
       RECORDKEY_FIELD.key -> "id",
-      PARTITIONPATH_FIELD.key -> "region_code,dt"
+      PARTITIONPATH_FIELD.key -> "region_code,dt",
+      DataSourceWriteOptions.PRECOMBINE_FIELD.key -> "price"
     )
 
     val readerOpts: Map[String, String] = queryOpts ++ Map(
@@ -745,9 +816,9 @@ class TestHoodieFileIndex extends HoodieSparkClientTestBase with ScalaAssertionS
     if (hiveStylePartitioning) {
       partitionNames.zip(partitionValues).map {
         case (name, value) => s"$name=$value"
-      }.mkString(Path.SEPARATOR)
+      }.mkString(StoragePath.SEPARATOR)
     } else {
-      partitionValues.mkString(Path.SEPARATOR)
+      partitionValues.mkString(StoragePath.SEPARATOR)
     }
   }
 }

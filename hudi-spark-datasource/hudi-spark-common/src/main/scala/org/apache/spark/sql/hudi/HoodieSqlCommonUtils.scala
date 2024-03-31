@@ -21,7 +21,6 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.hudi.client.common.HoodieSparkEngineContext
 import org.apache.hudi.common.config.{DFSPropertiesConfiguration, HoodieMetadataConfig, TypedProperties}
-import org.apache.hudi.common.fs.FSUtils
 import org.apache.hudi.common.model.HoodieRecord
 import org.apache.hudi.common.table.timeline.HoodieActiveTimeline.parseDateFromInstantTime
 import org.apache.hudi.common.table.timeline.{HoodieActiveTimeline, HoodieInstantTimeGenerator, HoodieTimeline}
@@ -29,6 +28,7 @@ import org.apache.hudi.common.table.{HoodieTableMetaClient, TableSchemaResolver}
 import org.apache.hudi.common.util.PartitionPathEncodeUtils
 import org.apache.hudi.exception.HoodieException
 import org.apache.hudi.{AvroConversionUtils, DataSourceReadOptions, SparkAdapterSupport}
+import org.apache.hudi.common.fs.FSUtils
 import org.apache.spark.api.java.JavaSparkContext
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.Resolver
@@ -326,25 +326,30 @@ object HoodieSqlCommonUtils extends SparkAdapterSupport {
   def getPartitionPathToDrop(
                               hoodieCatalogTable: HoodieCatalogTable,
                               normalizedSpecs: Seq[Map[String, String]]): String = {
-    val table = hoodieCatalogTable.table
-    val allPartitionPaths = hoodieCatalogTable.getPartitionPaths
-    val enableHiveStylePartitioning = isHiveStyledPartitioning(allPartitionPaths, table)
-    val enableEncodeUrl = isUrlEncodeEnabled(allPartitionPaths, table)
-    val partitionsToDrop = normalizedSpecs.map { spec =>
-      hoodieCatalogTable.partitionFields.map { partitionColumn =>
-        val encodedPartitionValue = if (enableEncodeUrl) {
-          PartitionPathEncodeUtils.escapePathName(spec(partitionColumn))
-        } else {
-          spec(partitionColumn)
-        }
-        if (enableHiveStylePartitioning) {
-          partitionColumn + "=" + encodedPartitionValue
-        } else {
-          encodedPartitionValue
-        }
-      }.mkString("/")
-    }.mkString(",")
-    partitionsToDrop
+    normalizedSpecs.map(makePartitionPath(hoodieCatalogTable, _)).mkString(",")
+  }
+
+  private def makePartitionPath(partitionFields: Seq[String],
+                                normalizedSpecs: Map[String, String],
+                                enableEncodeUrl: Boolean,
+                                enableHiveStylePartitioning: Boolean): String = {
+    partitionFields.map { partitionColumn =>
+      val encodedPartitionValue = if (enableEncodeUrl) {
+        PartitionPathEncodeUtils.escapePathName(normalizedSpecs(partitionColumn))
+      } else {
+        normalizedSpecs(partitionColumn)
+      }
+      if (enableHiveStylePartitioning) s"$partitionColumn=$encodedPartitionValue" else encodedPartitionValue
+    }.mkString("/")
+  }
+
+  def makePartitionPath(hoodieCatalogTable: HoodieCatalogTable,
+                        normalizedSpecs: Map[String, String]): String = {
+    val tableConfig = hoodieCatalogTable.tableConfig
+    val enableHiveStylePartitioning =  java.lang.Boolean.parseBoolean(tableConfig.getHiveStylePartitioningEnable)
+    val enableEncodeUrl = java.lang.Boolean.parseBoolean(tableConfig.getUrlEncodePartitioning)
+
+    makePartitionPath(hoodieCatalogTable.partitionFields, normalizedSpecs, enableEncodeUrl, enableHiveStylePartitioning)
   }
 
   private def validateInstant(queryInstant: String): Unit = {
