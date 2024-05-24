@@ -19,16 +19,19 @@
 package org.apache.hudi.sync.common.util;
 
 import org.apache.hudi.common.config.HoodieMetadataConfig;
+import org.apache.hudi.common.engine.HoodieEngineContext;
 import org.apache.hudi.common.engine.HoodieLocalEngineContext;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieBaseFile;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
+import org.apache.hudi.common.table.view.FileSystemViewManager;
+import org.apache.hudi.common.table.view.HoodieTableFileSystemView;
 import org.apache.hudi.common.util.ValidationUtils;
+import org.apache.hudi.common.util.VisibleForTesting;
 import org.apache.hudi.exception.HoodieException;
-import org.apache.hudi.metadata.HoodieMetadataFileSystemView;
+import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
 
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,7 +54,7 @@ public class ManifestFileWriter {
   private final HoodieTableMetaClient metaClient;
   private final boolean useFileListingFromMetadata;
 
-  private ManifestFileWriter(HoodieTableMetaClient metaClient, boolean useFileListingFromMetadata) {
+  protected ManifestFileWriter(HoodieTableMetaClient metaClient, boolean useFileListingFromMetadata) {
     this.metaClient = metaClient;
     this.useFileListingFromMetadata = useFileListingFromMetadata;
   }
@@ -61,13 +64,13 @@ public class ManifestFileWriter {
    */
   public synchronized void writeManifestFile(boolean useAbsolutePath) {
     try {
-      List<String> baseFiles = fetchLatestBaseFilesForAllPartitions(metaClient, useFileListingFromMetadata, useAbsolutePath)
+      List<String> baseFiles = fetchLatestBaseFilesForAllPartitions(useAbsolutePath)
           .collect(Collectors.toList());
       if (baseFiles.isEmpty()) {
         LOG.warn("No base file to generate manifest file.");
         return;
       } else {
-        LOG.info("Writing base file names to manifest file: " + baseFiles.size());
+        LOG.info("Writing base file names to manifest file: {}", baseFiles.size());
       }
       final StoragePath manifestFilePath = getManifestFilePath(useAbsolutePath);
       try (OutputStream outputStream = metaClient.getStorage().create(manifestFilePath, true);
@@ -82,19 +85,13 @@ public class ManifestFileWriter {
     }
   }
 
-  public static Stream<String> fetchLatestBaseFilesForAllPartitions(HoodieTableMetaClient metaClient,
-      boolean useFileListingFromMetadata, boolean useAbsolutePath) {
+  @VisibleForTesting
+  public Stream<String> fetchLatestBaseFilesForAllPartitions(boolean useAbsolutePath) {
     try {
-      List<String> partitions = FSUtils.getAllPartitionPaths(new HoodieLocalEngineContext(metaClient.getHadoopConf()),
-          metaClient.getBasePath(), useFileListingFromMetadata);
-      LOG.info("Retrieve all partitions: " + partitions.size());
-
-      Configuration hadoopConf = metaClient.getHadoopConf();
-      HoodieLocalEngineContext engContext = new HoodieLocalEngineContext(hadoopConf);
-      HoodieMetadataFileSystemView fsView = new HoodieMetadataFileSystemView(engContext, metaClient,
-          metaClient.getActiveTimeline().getCommitsTimeline().filterCompletedInstants(),
-          HoodieMetadataConfig.newBuilder().enable(useFileListingFromMetadata).build());
-      return partitions.parallelStream().flatMap(partition -> fsView.getLatestBaseFiles(partition).map(useAbsolutePath ? HoodieBaseFile::getPath : HoodieBaseFile::getFileName));
+      StorageConfiguration storageConf = metaClient.getStorageConf();
+      HoodieLocalEngineContext engContext = new HoodieLocalEngineContext(storageConf);
+      boolean canUseMetadataTable = useFileListingFromMetadata && metaClient.getTableConfig().isMetadataTableAvailable();
+      return getLatestBaseFiles(canUseMetadataTable, engContext, metaClient, useAbsolutePath);
     } catch (Exception e) {
       throw new HoodieException("Error in fetching latest base files.", e);
     }
@@ -102,6 +99,30 @@ public class ManifestFileWriter {
 
   public StoragePath getManifestFolder(boolean useAbsolutePath) {
     return new StoragePath(metaClient.getMetaPath(), useAbsolutePath ? ABSOLUTE_PATH_MANIFEST_FOLDER_NAME : MANIFEST_FOLDER_NAME);
+  }
+
+  @VisibleForTesting
+  static Stream<String> getLatestBaseFiles(boolean canUseMetadataTable, HoodieEngineContext engContext, HoodieTableMetaClient metaClient,
+                                           boolean useAbsolutePath) {
+    List<String> partitions = FSUtils.getAllPartitionPaths(engContext, metaClient.getBasePath(), canUseMetadataTable);
+    LOG.info("Retrieve all partitions: " + partitions.size());
+    HoodieTableFileSystemView fsView = null;
+    try {
+      fsView = FileSystemViewManager.createInMemoryFileSystemViewWithTimeline(engContext, metaClient,
+          HoodieMetadataConfig.newBuilder().enable(canUseMetadataTable).build(),
+          metaClient.getActiveTimeline().getCommitsTimeline().filterCompletedInstants());
+      if (canUseMetadataTable) {
+        // incase of MDT, we can load all partitions at once. If not for MDT, we can rely on fsView.getLatestBaseFiles(partition) for each partition to load from FS.
+        fsView.loadAllPartitions();
+      }
+      HoodieTableFileSystemView finalFsView = fsView;
+      // if we do not collect and return stream directly, lazy evaluation happens and we end up closing the fsview in finally block which later
+      // fails the getLatestBaseFiles call. Hence we collect and return a stream.
+      return partitions.parallelStream().flatMap(partition -> finalFsView.getLatestBaseFiles(partition)
+          .map(useAbsolutePath ? HoodieBaseFile::getPath : HoodieBaseFile::getFileName)).collect(Collectors.toList()).stream();
+    } finally {
+      fsView.close();
+    }
   }
 
   public StoragePath getManifestFilePath(boolean useAbsolutePath) {

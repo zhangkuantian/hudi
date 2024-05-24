@@ -27,16 +27,18 @@ import org.apache.hudi.common.model.HoodieAvroPayload;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.testutils.minicluster.HdfsTestService;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.HoodieStorageUtils;
+import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.StoragePathInfo;
+import org.apache.hudi.storage.hadoop.HoodieHadoopStorage;
 import org.apache.hudi.testutils.providers.DFSProvider;
 import org.apache.hudi.testutils.providers.HoodieMetaClientProvider;
 import org.apache.hudi.testutils.providers.HoodieWriteClientProvider;
 import org.apache.hudi.testutils.providers.SparkProvider;
 
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.spark.HoodieSparkKryoRegistrar$;
@@ -116,19 +118,19 @@ public class FunctionalTestHarness implements SparkProvider, DFSProvider, Hoodie
     return context;
   }
 
-  public HoodieTableMetaClient getHoodieMetaClient(Configuration hadoopConf, String basePath) throws IOException {
-    return getHoodieMetaClient(hadoopConf, basePath, new Properties());
+  public HoodieTableMetaClient getHoodieMetaClient(StorageConfiguration<?> storageConf, String basePath) throws IOException {
+    return getHoodieMetaClient(storageConf, basePath, new Properties());
   }
 
   @Override
-  public HoodieTableMetaClient getHoodieMetaClient(Configuration hadoopConf, String basePath, Properties props) throws IOException {
+  public HoodieTableMetaClient getHoodieMetaClient(StorageConfiguration<?> storageConf, String basePath, Properties props) throws IOException {
     props = HoodieTableMetaClient.withPropertyBuilder()
       .setTableName(RAW_TRIPS_TEST_NAME)
       .setTableType(COPY_ON_WRITE)
       .setPayloadClass(HoodieAvroPayload.class)
       .fromProperties(props)
       .build();
-    return HoodieTableMetaClient.initTableAndGetMetaClient(hadoopConf, basePath, props);
+    return HoodieTableMetaClient.initTableAndGetMetaClient(storageConf.newInstance(), basePath, props);
   }
 
   @Override
@@ -150,7 +152,7 @@ public class FunctionalTestHarness implements SparkProvider, DFSProvider, Hoodie
 
       hdfsTestService = new HdfsTestService();
       dfsCluster = hdfsTestService.start(true);
-      storage = HoodieStorageUtils.getStorage(dfsCluster.getFileSystem());
+      storage = new HoodieHadoopStorage(dfsCluster.getFileSystem());
       storage.createDirectory(new StoragePath("/tmp"));
 
       Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -176,8 +178,8 @@ public class FunctionalTestHarness implements SparkProvider, DFSProvider, Hoodie
   @AfterAll
   public static synchronized void cleanUpAfterAll() throws IOException {
     StoragePath workDir = new StoragePath("/tmp");
-    HoodieStorage storage =
-        HoodieStorageUtils.getStorage(workDir, hdfsTestService.getHadoopConf());
+    HoodieStorage storage = HoodieStorageUtils.getStorage(
+        workDir, HadoopFSUtils.getStorageConf(hdfsTestService.getHadoopConf()));
     List<StoragePathInfo> pathInfoList = storage.listDirectEntries(workDir);
     for (StoragePathInfo f : pathInfoList) {
       if (f.isDirectory()) {

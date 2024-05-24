@@ -47,12 +47,14 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.apache.flink.configuration.ConfigOptions.key;
 import static org.apache.hudi.common.table.cdc.HoodieCDCSupplementalLoggingMode.DATA_BEFORE_AFTER;
 import static org.apache.hudi.common.util.PartitionPathEncodeUtils.DEFAULT_PARTITION_PATH;
 
@@ -189,9 +191,9 @@ public class FlinkOptions extends HoodieConfig {
   public static final ConfigOption<Boolean> METADATA_ENABLED = ConfigOptions
       .key("metadata.enabled")
       .booleanType()
-      .defaultValue(false)
+      .defaultValue(true)
       .withFallbackKeys(HoodieMetadataConfig.ENABLE.key())
-      .withDescription("Enable the internal metadata table which serves table metadata like level file listings, default disabled");
+      .withDescription("Enable the internal metadata table which serves table metadata like level file listings, default enabled");
 
   public static final ConfigOption<Integer> METADATA_COMPACTION_DELTA_COMMITS = ConfigOptions
       .key("metadata.compaction.delta_commits")
@@ -1057,6 +1059,14 @@ public class FlinkOptions extends HoodieConfig {
       .stringType()
       .defaultValue(HoodieSyncTableStrategy.ALL.name())
       .withDescription("Hive table synchronization strategy. Available option: RO, RT, ALL.");
+
+  public static final ConfigOption<Duration> LOOKUP_JOIN_CACHE_TTL =
+      key("lookup.join.cache.ttl")
+          .durationType()
+          .defaultValue(Duration.ofMinutes(60))
+          .withDescription(
+              "The cache TTL (e.g. 10min) for the build table in lookup join.");
+
 
   // -------------------------------------------------------------------------
   //  Utilities

@@ -17,18 +17,22 @@
 
 package org.apache.hudi
 
-import org.apache.avro.Schema
-import org.apache.commons.io.FileUtils
 import org.apache.hudi.client.SparkRDDWriteClient
-import org.apache.hudi.common.model.{HoodieFileFormat, HoodieRecord, HoodieRecordPayload, HoodieTableType, WriteOperationType}
+import org.apache.hudi.common.model.{HoodieFileFormat, HoodieRecord, HoodieRecordPayload, HoodieReplaceCommitMetadata, HoodieTableType, WriteOperationType}
 import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient, TableSchemaResolver}
+import org.apache.hudi.common.table.timeline.TimelineUtils
 import org.apache.hudi.common.testutils.HoodieTestDataGenerator
 import org.apache.hudi.config.{HoodieBootstrapConfig, HoodieIndexConfig, HoodieWriteConfig}
 import org.apache.hudi.exception.{HoodieException, SchemaCompatibilityException}
 import org.apache.hudi.execution.bulkinsert.BulkInsertSortMode
 import org.apache.hudi.functional.TestBootstrap
+import org.apache.hudi.hadoop.fs.HadoopFSUtils
 import org.apache.hudi.keygen.{ComplexKeyGenerator, NonpartitionedKeyGenerator, SimpleKeyGenerator}
+import org.apache.hudi.testutils.HoodieClientTestUtils.createMetaClient
 import org.apache.hudi.testutils.{DataSourceTestUtils, HoodieClientTestUtils}
+
+import org.apache.avro.Schema
+import org.apache.commons.io.FileUtils
 import org.apache.spark.api.java.JavaSparkContext
 import org.apache.spark.sql.functions.{expr, lit}
 import org.apache.spark.sql.hudi.command.SqlKeyGenerator
@@ -42,10 +46,10 @@ import org.mockito.Mockito.{spy, times, verify}
 import org.scalatest.Assertions.assertThrows
 import org.scalatest.Matchers.{be, convertToAnyShouldWrapper, intercept}
 
-import java.io.IOException
 import java.time.Instant
 import java.util.{Collections, Date, UUID}
-import scala.collection.JavaConversions._
+
+import scala.collection.JavaConverters._
 
 /**
  * Test suite for SparkSqlWriter class.
@@ -84,8 +88,8 @@ class TestHoodieSparkSqlWriter extends HoodieSparkWriterTestBase {
     // add some updates so that preCombine kicks in
     val toUpdateDataset = sqlContext.createDataFrame(DataSourceTestUtils.getUniqueRows(inserts, 40), structType)
     val updates = DataSourceTestUtils.updateRowsWithHigherTs(toUpdateDataset)
-    val records = inserts.union(updates)
-    val recordsSeq = convertRowListToSeq(records)
+    val records = inserts.asScala.union(updates.asScala)
+    val recordsSeq = convertRowListToSeq(records.asJava)
     val df = spark.createDataFrame(sc.parallelize(recordsSeq), structType)
     // write to Hudi
     HoodieSparkSqlWriter.write(sqlContext, SaveMode.Append, fooTableModifier, df)
@@ -324,7 +328,7 @@ def testBulkInsertForDropPartitionColumn(): Unit = {
     val schema = DataSourceTestUtils.getStructTypeExampleSchema
     val structType = AvroConversionUtils.convertAvroSchemaToStructType(schema)
     val inserts = DataSourceTestUtils.generateRandomRows(1000)
-    val df = spark.createDataFrame(sc.parallelize(inserts), structType)
+    val df = spark.createDataFrame(sc.parallelize(inserts.asScala.toSeq), structType)
     try {
       // write to Hudi
       HoodieSparkSqlWriter.write(sqlContext, SaveMode.Append, fooTableModifier, df)
@@ -412,7 +416,7 @@ def testBulkInsertForDropPartitionColumn(): Unit = {
     val df = spark.createDataFrame(sc.parallelize(recordsSeq), structType)
 
     // try write to Hudi
-    assertThrows[IOException] {
+    assertThrows[HoodieException] {
       HoodieSparkSqlWriter.write(sqlContext, SaveMode.Append, tableOpts - DataSourceWriteOptions.PARTITIONPATH_FIELD.key, df)
     }
   }
@@ -485,7 +489,7 @@ def testBulkInsertForDropPartitionColumn(): Unit = {
     initializeMetaClientForBootstrap(fooTableParams, tableType, addBootstrapPath = false, initBasePath = true)
     val client = spy(DataSourceUtils.createHoodieClient(
       new JavaSparkContext(sc), modifiedSchema.toString, tempBasePath, hoodieFooTableName,
-      mapAsJavaMap(fooTableParams)).asInstanceOf[SparkRDDWriteClient[HoodieRecordPayload[Nothing]]])
+      fooTableParams.asJava).asInstanceOf[SparkRDDWriteClient[HoodieRecordPayload[Nothing]]])
 
     HoodieSparkSqlWriter.write(sqlContext, SaveMode.Append, fooTableModifier, df, Option.empty, Option(client))
     // Verify that asynchronous compaction is not scheduled
@@ -546,7 +550,7 @@ def testBulkInsertForDropPartitionColumn(): Unit = {
         null,
         tempBasePath,
         hoodieFooTableName,
-        mapAsJavaMap(fooTableParams)).asInstanceOf[SparkRDDWriteClient[HoodieRecordPayload[Nothing]]])
+        fooTableParams.asJava).asInstanceOf[SparkRDDWriteClient[HoodieRecordPayload[Nothing]]])
 
       HoodieSparkSqlWriter.bootstrap(sqlContext, SaveMode.Append, fooTableModifier, spark.emptyDataFrame, Option.empty,
         Option.empty, Option(client))
@@ -588,7 +592,7 @@ def testBulkInsertForDropPartitionColumn(): Unit = {
           .setBootstrapBasePath(fooTableParams(HoodieBootstrapConfig.BASE_PATH.key))
       }
     if (initBasePath) {
-      tableMetaClientBuilder.initTable(sc.hadoopConfiguration, tempBasePath)
+      tableMetaClientBuilder.initTable(HadoopFSUtils.getStorageConfWithCopy(sc.hadoopConfiguration), tempBasePath)
     }
   }
 
@@ -868,6 +872,27 @@ def testBulkInsertForDropPartitionColumn(): Unit = {
     }).count())
   }
 
+  @Test
+  def testDeletePartitionsWithWrongPartition(): Unit = {
+    var (_, fooTableModifier) = deletePartitionSetup()
+    fooTableModifier = fooTableModifier
+      .updated(DataSourceWriteOptions.PARTITIONS_TO_DELETE.key(), "2016/03/15" + "," + "2025/03")
+      .updated(DataSourceWriteOptions.OPERATION.key(), WriteOperationType.DELETE_PARTITION.name())
+    HoodieSparkSqlWriter.write(sqlContext, SaveMode.Append, fooTableModifier, spark.emptyDataFrame)
+    val snapshotDF3 = spark.read.format("org.apache.hudi").load(tempBasePath)
+    assertEquals(0, snapshotDF3.filter(entry => {
+      val partitionPath = entry.getString(3)
+      Seq("2015/03/16", "2015/03/17").count(p => partitionPath.equals(p)) != 1
+    }).count())
+
+    val activeTimeline = createMetaClient(spark, tempBasePath).getActiveTimeline
+    val metadata = TimelineUtils.getCommitMetadata(activeTimeline.lastInstant().get(), activeTimeline)
+      .asInstanceOf[HoodieReplaceCommitMetadata]
+    assertTrue(metadata.getOperationType.equals(WriteOperationType.DELETE_PARTITION))
+    // "2025/03" should not be in partitionToReplaceFileIds
+    assertEquals(Collections.singleton("2016/03/15"), metadata.getPartitionToReplaceFileIds.keySet())
+  }
+
   /**
    * Test case for non partition table with metatable support.
    */
@@ -1013,9 +1038,7 @@ def testBulkInsertForDropPartitionColumn(): Unit = {
          | )
          | location '$tablePath1'
        """.stripMargin)
-    val tableConfig1 = HoodieTableMetaClient.builder()
-      .setConf(spark.sparkContext.hadoopConfiguration)
-      .setBasePath(tablePath1).build().getTableConfig
+    val tableConfig1 = createMetaClient(spark, tablePath1).getTableConfig
     assert(tableConfig1.getHiveStylePartitioningEnable == "true")
     assert(tableConfig1.getUrlEncodePartitioning == "false")
     assert(tableConfig1.getKeyGeneratorClassName == classOf[SimpleKeyGenerator].getName)
@@ -1034,9 +1057,7 @@ def testBulkInsertForDropPartitionColumn(): Unit = {
       .option(HoodieWriteConfig.TBL_NAME.key, tableName2)
       .option(DataSourceWriteOptions.URL_ENCODE_PARTITIONING.key, "true")
       .mode(SaveMode.Overwrite).save(tablePath2)
-    val tableConfig2 = HoodieTableMetaClient.builder()
-      .setConf(spark.sparkContext.hadoopConfiguration)
-      .setBasePath(tablePath2).build().getTableConfig
+    val tableConfig2 = createMetaClient(spark, tablePath2).getTableConfig
     assert(tableConfig2.getHiveStylePartitioningEnable == "false")
     assert(tableConfig2.getUrlEncodePartitioning == "true")
     assert(tableConfig2.getKeyGeneratorClassName == classOf[SimpleKeyGenerator].getName)
@@ -1234,10 +1255,7 @@ def testBulkInsertForDropPartitionColumn(): Unit = {
   }
 
   private def fetchActualSchema(): Schema = {
-    val tableMetaClient = HoodieTableMetaClient.builder()
-      .setConf(spark.sparkContext.hadoopConfiguration)
-      .setBasePath(tempBasePath)
-      .build()
+    val tableMetaClient = createMetaClient(spark, tempBasePath)
     new TableSchemaResolver(tableMetaClient).getTableAvroSchema(false)
   }
 }

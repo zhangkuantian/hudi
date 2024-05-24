@@ -166,7 +166,7 @@ public class TimelineCommand {
   }
 
   private HoodieTableMetaClient getMetadataTableMetaClient(HoodieTableMetaClient metaClient) {
-    return HoodieTableMetaClient.builder().setConf(HoodieCLI.conf)
+    return HoodieTableMetaClient.builder().setConf(HoodieCLI.conf.newInstance())
         .setBasePath(HoodieTableMetadata.getMetadataTableBasePath(metaClient.getBasePath()))
         .setLoadActiveTimelineOnLoad(false)
         .setConsistencyGuardConfig(HoodieCLI.consistencyGuardConfig)
@@ -174,10 +174,10 @@ public class TimelineCommand {
   }
 
   private Map<String, Map<HoodieInstant.State, HoodieInstantWithModTime>> getInstantInfoFromTimeline(
-      HoodieStorage storage, String metaPath) throws IOException {
+      HoodieStorage storage, StoragePath metaPath) throws IOException {
     Map<String, Map<HoodieInstant.State, HoodieInstantWithModTime>> instantMap = new HashMap<>();
     Stream<HoodieInstantWithModTime> instantStream =
-        HoodieTableMetaClient.scanFiles(storage, new StoragePath(metaPath), path -> {
+        HoodieTableMetaClient.scanFiles(storage, metaPath, path -> {
           // Include only the meta files with extensions that needs to be included
           String extension = HoodieInstant.getTimelineFileExtension(path.getName());
           return HoodieActiveTimeline.VALID_EXTENSIONS_IN_ACTIVE_TIMELINE.contains(extension);

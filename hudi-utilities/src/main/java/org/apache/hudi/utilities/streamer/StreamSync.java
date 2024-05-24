@@ -63,6 +63,7 @@ import org.apache.hudi.config.HoodieErrorTableConfig;
 import org.apache.hudi.config.HoodieIndexConfig;
 import org.apache.hudi.config.HoodiePayloadConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.config.metrics.HoodieMetricsConfig;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.exception.HoodieMetaSyncException;
@@ -74,10 +75,12 @@ import org.apache.hudi.keygen.KeyGenUtils;
 import org.apache.hudi.keygen.factory.HoodieSparkKeyGeneratorFactory;
 import org.apache.hudi.metrics.HoodieMetrics;
 import org.apache.hudi.storage.HoodieStorage;
-import org.apache.hudi.storage.HoodieStorageUtils;
+import org.apache.hudi.storage.StorageConfiguration;
 import org.apache.hudi.storage.StoragePath;
+import org.apache.hudi.storage.hadoop.HoodieHadoopStorage;
 import org.apache.hudi.sync.common.util.SyncUtilHelpers;
 import org.apache.hudi.table.action.HoodieWriteMetadata;
+import org.apache.hudi.util.JavaScalaConverters;
 import org.apache.hudi.util.SparkKeyGenUtils;
 import org.apache.hudi.utilities.UtilHelpers;
 import org.apache.hudi.utilities.callback.kafka.HoodieWriteCommitKafkaCallback;
@@ -130,8 +133,8 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import scala.Tuple2;
-import scala.collection.JavaConversions;
 
+import static org.apache.hudi.DataSourceUtils.createUserDefinedBulkInsertPartitioner;
 import static org.apache.hudi.avro.AvroSchemaUtils.getAvroRecordQualifiedName;
 import static org.apache.hudi.common.table.HoodieTableConfig.ARCHIVELOG_FOLDER;
 import static org.apache.hudi.common.table.HoodieTableConfig.HIVE_STYLE_PARTITIONING_ENABLE;
@@ -289,7 +292,7 @@ public class StreamSync implements Serializable, Closeable {
                     TypedProperties props, JavaSparkContext jssc, FileSystem fs, Configuration conf,
                     Function<SparkRDDWriteClient, Boolean> onInitializingHoodieWriteClient) throws IOException {
     this(cfg, sparkSession, props, new HoodieSparkEngineContext(jssc),
-        HoodieStorageUtils.getStorage(fs), conf, onInitializingHoodieWriteClient,
+        new HoodieHadoopStorage(fs), conf, onInitializingHoodieWriteClient,
         new DefaultStreamContext(schemaProvider, Option.empty()));
   }
 
@@ -310,8 +313,10 @@ public class StreamSync implements Serializable, Closeable {
     this.conf = conf;
 
     HoodieWriteConfig hoodieWriteConfig = getHoodieClientConfig();
-    this.metrics = (HoodieIngestionMetrics) ReflectionUtils.loadClass(cfg.ingestionMetricsClass, hoodieWriteConfig.getMetricsConfig());
-    this.hoodieMetrics = new HoodieMetrics(hoodieWriteConfig);
+    this.metrics = (HoodieIngestionMetrics) ReflectionUtils.loadClass(cfg.ingestionMetricsClass,
+        new Class<?>[] { HoodieMetricsConfig.class, StorageConfiguration.class},
+        hoodieWriteConfig.getMetricsConfig(), storage.getConf());
+    this.hoodieMetrics = new HoodieMetrics(hoodieWriteConfig, storage.getConf());
     if (props.getBoolean(ERROR_TABLE_ENABLED.key(), ERROR_TABLE_ENABLED.defaultValue())) {
       this.errorTableWriter = ErrorTableUtils.getErrorTableWriter(
           cfg, sparkSession, props, hoodieSparkContext, storage);
@@ -337,7 +342,7 @@ public class StreamSync implements Serializable, Closeable {
     if (storage.exists(new StoragePath(cfg.targetBasePath))) {
       try {
         HoodieTableMetaClient meta = HoodieTableMetaClient.builder()
-            .setConf(conf)
+            .setConf(HadoopFSUtils.getStorageConfWithCopy(conf))
             .setBasePath(cfg.targetBasePath)
             .setPayloadClassName(cfg.payloadClassName)
             .setRecordMergerStrategy(
@@ -372,7 +377,8 @@ public class StreamSync implements Serializable, Closeable {
             LOG.warn("Base path exists, but table is not fully initialized. Re-initializing again");
             initializeEmptyTable();
             // reload the timeline from metaClient and validate that its empty table. If there are any instants found, then we should fail the pipeline, bcoz hoodie.properties got deleted by mistake.
-            HoodieTableMetaClient metaClientToValidate = HoodieTableMetaClient.builder().setConf(conf).setBasePath(cfg.targetBasePath).build();
+            HoodieTableMetaClient metaClientToValidate = HoodieTableMetaClient.builder()
+                .setConf(HadoopFSUtils.getStorageConfWithCopy(conf)).setBasePath(cfg.targetBasePath).build();
             if (metaClientToValidate.reloadActiveTimeline().countInstants() > 0) {
               // Deleting the recreated hoodie.properties and throwing exception.
               storage.deleteDirectory(new StoragePath(String.format("%s%s/%s", basePathWithForwardSlash,
@@ -419,7 +425,7 @@ public class StreamSync implements Serializable, Closeable {
             Boolean.parseBoolean(HIVE_STYLE_PARTITIONING_ENABLE.defaultValue())))
         .setUrlEncodePartitioning(props.getBoolean(URL_ENCODE_PARTITIONING.key(),
             Boolean.parseBoolean(URL_ENCODE_PARTITIONING.defaultValue())))
-        .initTable(new Configuration(hoodieSparkContext.hadoopConfiguration()),
+        .initTable(HadoopFSUtils.getStorageConfWithCopy(hoodieSparkContext.hadoopConfiguration()),
             cfg.targetBasePath);
   }
 
@@ -433,7 +439,7 @@ public class StreamSync implements Serializable, Closeable {
     // Refresh Timeline
     refreshTimeline();
     HoodieTableMetaClient metaClient = HoodieTableMetaClient.builder()
-        .setConf(conf)
+        .setConf(HadoopFSUtils.getStorageConfWithCopy(conf))
         .setBasePath(cfg.targetBasePath)
         .setRecordMergerStrategy(props.getProperty(HoodieWriteConfig.RECORD_MERGER_STRATEGY.key(), HoodieWriteConfig.RECORD_MERGER_STRATEGY.defaultValue()))
         .setTimeGeneratorConfig(HoodieTimeGeneratorConfig.newBuilder().fromProperties(props).withPath(cfg.targetBasePath).build())
@@ -983,7 +989,7 @@ public class StreamSync implements Serializable, Closeable {
           writeClientWriteResult = new WriteClientWriteResult(writeClient.upsert(records, instantTime));
           break;
         case BULK_INSERT:
-          writeClientWriteResult = new WriteClientWriteResult(writeClient.bulkInsert(records, instantTime));
+          writeClientWriteResult = new WriteClientWriteResult(writeClient.bulkInsert(records, instantTime, createUserDefinedBulkInsertPartitioner(writeClient.getConfig())));
           break;
         case INSERT_OVERWRITE:
           writeResult = writeClient.insertOverwrite(records, instantTime);
@@ -1035,24 +1041,30 @@ public class StreamSync implements Serializable, Closeable {
       Map<String, HoodieException> failedMetaSyncs = new HashMap<>();
       for (String impl : syncClientToolClasses) {
         Timer.Context syncContext = metrics.getMetaSyncTimerContext();
-        boolean success = false;
+        Option<HoodieMetaSyncException> metaSyncException = Option.empty();
         try {
           SyncUtilHelpers.runHoodieMetaSync(impl.trim(), metaProps, conf, fs, cfg.targetBasePath, cfg.baseFileFormat);
-          success = true;
         } catch (HoodieMetaSyncException e) {
-          LOG.error("SyncTool class {} failed with exception {}", impl.trim(), e);
-          failedMetaSyncs.put(impl, e);
+          metaSyncException = Option.of(e);
         }
-        long metaSyncTimeNanos = syncContext != null ? syncContext.stop() : 0;
-        metrics.updateStreamerMetaSyncMetrics(getSyncClassShortName(impl), metaSyncTimeNanos);
-        if (success) {
-          long timeMs = metaSyncTimeNanos / 1000000L;
-          LOG.info("[MetaSync] SyncTool class {} completed successfully and took {} s {} ms ", impl.trim(), timeMs / 1000L, timeMs % 1000L);
-        }
+        logMetaSync(impl, syncContext, failedMetaSyncs,  metaSyncException);
       }
       if (!failedMetaSyncs.isEmpty()) {
         throw getHoodieMetaSyncException(failedMetaSyncs);
       }
+    }
+  }
+
+  private void logMetaSync(String impl, Timer.Context syncContext, Map<String, HoodieException> failedMetaSyncs, Option<HoodieMetaSyncException> metaSyncException) {
+    long metaSyncTimeNanos = syncContext != null ? syncContext.stop() : 0;
+    metrics.updateStreamerMetaSyncMetrics(getSyncClassShortName(impl), metaSyncTimeNanos);
+    long timeMs = metaSyncTimeNanos / 1000000L;
+    String timeString = String.format("and took %d s %d ms ", timeMs / 1000L, timeMs % 1000L);
+    if (metaSyncException.isPresent()) {
+      LOG.error("[MetaSync] SyncTool class {} failed with exception {} {}", impl.trim(), metaSyncException.get(), timeString);
+      failedMetaSyncs.put(impl, metaSyncException.get());
+    } else {
+      LOG.info("[MetaSync] SyncTool class {} completed successfully {}", impl.trim(), timeString);
     }
   }
 
@@ -1186,7 +1198,8 @@ public class StreamSync implements Serializable, Closeable {
       if (targetSchema == null || (SchemaCompatibility.checkReaderWriterCompatibility(targetSchema, InputBatch.NULL_SCHEMA).getType() == SchemaCompatibility.SchemaCompatibilityType.COMPATIBLE
           && SchemaCompatibility.checkReaderWriterCompatibility(InputBatch.NULL_SCHEMA, targetSchema).getType() == SchemaCompatibility.SchemaCompatibilityType.COMPATIBLE)) {
         // target schema is null. fetch schema from commit metadata and use it
-        HoodieTableMetaClient meta = HoodieTableMetaClient.builder().setConf(conf)
+        HoodieTableMetaClient meta = HoodieTableMetaClient.builder()
+            .setConf(HadoopFSUtils.getStorageConfWithCopy(conf))
             .setBasePath(cfg.targetBasePath)
             .setPayloadClassName(cfg.payloadClassName)
             .build();
@@ -1238,7 +1251,7 @@ public class StreamSync implements Serializable, Closeable {
         LOG.debug("Registering Schema: " + schemas);
       }
       // Use the underlying spark context in case the java context is changed during runtime
-      hoodieSparkContext.getJavaSparkContext().sc().getConf().registerAvroSchemas(JavaConversions.asScalaBuffer(schemas).toList());
+      hoodieSparkContext.getJavaSparkContext().sc().getConf().registerAvroSchemas(JavaScalaConverters.convertJavaListToScalaList(schemas).toList());
     }
   }
 

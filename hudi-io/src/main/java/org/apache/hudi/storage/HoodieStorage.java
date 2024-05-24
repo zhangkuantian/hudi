@@ -60,6 +60,18 @@ public abstract class HoodieStorage implements Closeable {
   public abstract int getDefaultBlockSize(StoragePath path);
 
   /**
+   * @return the default buffer size.
+   */
+  @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
+  public abstract int getDefaultBufferSize();
+
+  /**
+   * @return the default block replication
+   */
+  @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
+  public abstract short getDefaultReplication(StoragePath path);
+
+  /**
    * Returns a URI which identifies this HoodieStorage.
    *
    * @return the URI of this storage instance.
@@ -80,6 +92,21 @@ public abstract class HoodieStorage implements Closeable {
   public abstract OutputStream create(StoragePath path, boolean overwrite) throws IOException;
 
   /**
+   * Creates an OutputStream at the indicated path.
+   *
+   * @param path          the file to create
+   * @param overwrite     if a file with this name already exists, then if {@code true},
+   *                      the file will be overwritten, and if {@code false} an exception will be thrown.
+   * @param bufferSize    the size of the buffer to be used
+   * @param replication   required block replication for the file
+   * @param sizeThreshold block size
+   * @return the OutputStream to write to.
+   * @throws IOException IO error.
+   */
+  @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
+  public abstract OutputStream create(StoragePath path, boolean overwrite, Integer bufferSize, Short replication, Long sizeThreshold) throws IOException;
+
+  /**
    * Opens an InputStream at the indicated path.
    *
    * @param path the file to open.
@@ -94,11 +121,12 @@ public abstract class HoodieStorage implements Closeable {
    *
    * @param path       the file to open.
    * @param bufferSize buffer size to use.
+   * @param wrapStream true if we want to wrap the inputstream based on filesystem specific criteria
    * @return the InputStream to read from.
    * @throws IOException IO error.
    */
   @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
-  public abstract SeekableDataInputStream openSeekable(StoragePath path, int bufferSize) throws IOException;
+  public abstract SeekableDataInputStream openSeekable(StoragePath path, int bufferSize, boolean wrapStream) throws IOException;
 
   /**
    * Appends to an existing file (optional operation).
@@ -223,25 +251,22 @@ public abstract class HoodieStorage implements Closeable {
   public abstract boolean deleteFile(StoragePath path) throws IOException;
 
   /**
-   * Qualifies a path to one which uses this storage and, if relative, made absolute.
-   *
-   * @param path to qualify.
-   * @return Qualified path.
-   */
-  @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
-  public abstract StoragePath makeQualified(StoragePath path);
-
-  /**
    * @return the underlying file system instance if exists.
    */
   @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
   public abstract Object getFileSystem();
 
   /**
-   * @return the underlying configuration instance if exists.
+   * @return the storage configuration.
    */
   @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
-  public abstract Object getConf();
+  public abstract StorageConfiguration<?> getConf();
+
+  /**
+   * @return the raw storage.
+   */
+  @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
+  public abstract HoodieStorage getRawStorage();
 
   /**
    * Creates a new file with overwrite set to false. This ensures files are created
@@ -357,12 +382,13 @@ public abstract class HoodieStorage implements Closeable {
    * Opens an SeekableDataInputStream at the indicated path with seeks supported.
    *
    * @param path the file to open.
+   * @param wrapStream true if we want to wrap the inputstream based on filesystem specific criteria
    * @return the InputStream to read from.
    * @throws IOException IO error.
    */
   @PublicAPIMethod(maturity = ApiMaturityLevel.EVOLVING)
-  public SeekableDataInputStream openSeekable(StoragePath path) throws IOException {
-    return openSeekable(path, getDefaultBlockSize(path));
+  public SeekableDataInputStream openSeekable(StoragePath path, boolean wrapStream) throws IOException {
+    return openSeekable(path, getDefaultBlockSize(path), wrapStream);
   }
 
   /**

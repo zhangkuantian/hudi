@@ -18,9 +18,7 @@
 
 package org.apache.hudi.hadoop;
 
-import org.apache.hudi.common.config.SerializableConfiguration;
 import org.apache.hudi.common.engine.HoodieLocalEngineContext;
-import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.HoodieBaseFile;
 import org.apache.hudi.common.model.HoodiePartitionMetadata;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
@@ -28,11 +26,13 @@ import org.apache.hudi.common.table.view.FileSystemViewManager;
 import org.apache.hudi.common.table.view.HoodieTableFileSystemView;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.TableNotFoundException;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.hadoop.utils.HoodieHiveUtils;
 import org.apache.hudi.hadoop.utils.HoodieInputFormatUtils;
-import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.storage.HoodieStorageUtils;
+import org.apache.hudi.storage.StorageConfiguration;
+import org.apache.hudi.storage.StoragePath;
 
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
@@ -53,6 +53,7 @@ import java.util.stream.Collectors;
 import static org.apache.hudi.common.config.HoodieCommonConfig.TIMESTAMP_AS_OF;
 import static org.apache.hudi.common.table.timeline.TimelineUtils.validateTimestampAsOf;
 import static org.apache.hudi.common.util.StringUtils.nonEmpty;
+import static org.apache.hudi.hadoop.fs.HadoopFSUtils.convertToStoragePath;
 
 /**
  * Given a path is a part of - Hoodie table = accepts ONLY the latest version of each path - Non-Hoodie table = then
@@ -86,9 +87,9 @@ public class HoodieROTablePathFilter implements Configurable, PathFilter, Serial
   Map<String, HoodieTableMetaClient> metaClientCache;
 
   /**
-   * Hadoop configurations for the FileSystem.
+   * Storage configurations for read.
    */
-  private SerializableConfiguration conf;
+  private StorageConfiguration<?> conf;
 
   private transient HoodieLocalEngineContext engineContext;
 
@@ -102,7 +103,7 @@ public class HoodieROTablePathFilter implements Configurable, PathFilter, Serial
   public HoodieROTablePathFilter(Configuration conf) {
     this.hoodiePathCache = new ConcurrentHashMap<>();
     this.nonHoodiePathCache = new HashSet<>();
-    this.conf = new SerializableConfiguration(conf);
+    this.conf = HadoopFSUtils.getStorageConfWithCopy(conf);
     this.metaClientCache = new HashMap<>();
   }
 
@@ -123,7 +124,7 @@ public class HoodieROTablePathFilter implements Configurable, PathFilter, Serial
   public boolean accept(Path path) {
 
     if (engineContext == null) {
-      this.engineContext = new HoodieLocalEngineContext(this.conf.get());
+      this.engineContext = new HoodieLocalEngineContext(this.conf);
     }
 
     if (LOG.isDebugEnabled()) {
@@ -133,7 +134,7 @@ public class HoodieROTablePathFilter implements Configurable, PathFilter, Serial
     try {
       if (storage == null) {
         storage =
-            HoodieStorageUtils.getStorage(new StoragePath(path.toUri()), conf.get());
+            HoodieStorageUtils.getStorage(convertToStoragePath(path), conf);
       }
 
       // Assumes path is a file
@@ -166,8 +167,9 @@ public class HoodieROTablePathFilter implements Configurable, PathFilter, Serial
 
       // Perform actual checking.
       Path baseDir;
-      if (HoodiePartitionMetadata.hasPartitionMetadata(storage, new StoragePath(folder.toUri()))) {
-        HoodiePartitionMetadata metadata = new HoodiePartitionMetadata(storage, new StoragePath(folder.toUri()));
+      StoragePath storagePath = convertToStoragePath(folder);
+      if (HoodiePartitionMetadata.hasPartitionMetadata(storage, storagePath)) {
+        HoodiePartitionMetadata metadata = new HoodiePartitionMetadata(storage, storagePath);
         metadata.readFromFS();
         baseDir = HoodieHiveUtils.getNthParent(folder, metadata.getPartitionDepth());
       } else {
@@ -186,8 +188,9 @@ public class HoodieROTablePathFilter implements Configurable, PathFilter, Serial
         try {
           HoodieTableMetaClient metaClient = metaClientCache.get(baseDir.toString());
           if (null == metaClient) {
-            metaClient = HoodieTableMetaClient.builder().setConf(
-                (Configuration) storage.getConf()).setBasePath(baseDir.toString()).setLoadActiveTimelineOnLoad(true).build();
+            metaClient = HoodieTableMetaClient.builder()
+                .setConf(storage.getConf().newInstance()).setBasePath(baseDir.toString())
+                .setLoadActiveTimelineOnLoad(true).build();
             metaClientCache.put(baseDir.toString(), metaClient);
           }
 
@@ -206,7 +209,7 @@ public class HoodieROTablePathFilter implements Configurable, PathFilter, Serial
             fsView = FileSystemViewManager.createInMemoryFileSystemView(engineContext,
                 metaClient, HoodieInputFormatUtils.buildMetadataConfig(conf));
           }
-          String partition = FSUtils.getRelativePartitionPath(new Path(metaClient.getBasePath()), folder);
+          String partition = HadoopFSUtils.getRelativePartitionPath(new Path(metaClient.getBasePath()), folder);
           List<HoodieBaseFile> latestFiles = fsView.getLatestBaseFiles(partition).collect(Collectors.toList());
           // populate the cache
           if (!hoodiePathCache.containsKey(folder.toString())) {
@@ -254,11 +257,11 @@ public class HoodieROTablePathFilter implements Configurable, PathFilter, Serial
 
   @Override
   public void setConf(Configuration conf) {
-    this.conf = new SerializableConfiguration(conf);
+    this.conf = HadoopFSUtils.getStorageConfWithCopy(conf);
   }
 
   @Override
   public Configuration getConf() {
-    return conf.get();
+    return conf.unwrapAs(Configuration.class);
   }
 }

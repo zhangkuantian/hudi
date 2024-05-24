@@ -82,6 +82,7 @@ import static org.apache.hudi.common.config.HoodieMetadataConfig.DEFAULT_METADAT
 import static org.apache.hudi.common.config.HoodieMetadataConfig.ENABLE;
 import static org.apache.hudi.common.table.HoodieTableMetaClient.METAFOLDER_NAME;
 import static org.apache.hudi.common.table.timeline.TimelineUtils.handleHollowCommitIfNeeded;
+import static org.apache.hudi.hadoop.fs.HadoopFSUtils.convertToStoragePath;
 
 public class HoodieInputFormatUtils {
 
@@ -184,7 +185,7 @@ public class HoodieInputFormatUtils {
       return getInputFormat(HoodieFileFormat.HFILE, realtime, conf);
     }
     // now we support read log file, try to find log file
-    if (FSUtils.isLogFile(new Path(path)) && realtime) {
+    if (HadoopFSUtils.isLogFile(new Path(path)) && realtime) {
       return getInputFormat(HoodieFileFormat.PARQUET, realtime, conf);
     }
     throw new HoodieIOException("Hoodie InputFormat not implemented for base file of type " + extension);
@@ -358,15 +359,17 @@ public class HoodieInputFormatUtils {
    */
   public static HoodieTableMetaClient getTableMetaClientForBasePathUnchecked(Configuration conf, Path partitionPath) throws IOException {
     Path baseDir = partitionPath;
-    HoodieStorage storage = HoodieStorageUtils.getStorage(partitionPath.toString(), conf);
-    if (HoodiePartitionMetadata.hasPartitionMetadata(storage, new StoragePath(partitionPath.toUri()))) {
-      HoodiePartitionMetadata metadata = new HoodiePartitionMetadata(storage, new StoragePath(partitionPath.toUri()));
+    HoodieStorage storage = HoodieStorageUtils.getStorage(
+        partitionPath.toString(), HadoopFSUtils.getStorageConf(conf));
+    StoragePath partitionStoragePath = convertToStoragePath(partitionPath);
+    if (HoodiePartitionMetadata.hasPartitionMetadata(storage,  partitionStoragePath)) {
+      HoodiePartitionMetadata metadata = new HoodiePartitionMetadata(storage, partitionStoragePath);
       metadata.readFromFS();
       int levels = metadata.getPartitionDepth();
       baseDir = HoodieHiveUtils.getNthParent(partitionPath, levels);
     } else {
       for (int i = 0; i < partitionPath.depth(); i++) {
-        if (storage.exists(new StoragePath(new StoragePath(baseDir.toUri()), METAFOLDER_NAME))) {
+        if (storage.exists(new StoragePath(convertToStoragePath(baseDir), METAFOLDER_NAME))) {
           break;
         } else if (i == partitionPath.depth() - 1) {
           throw new TableNotFoundException(partitionPath.toString());
@@ -376,8 +379,8 @@ public class HoodieInputFormatUtils {
       }
     }
     LOG.info("Reading hoodie metadata from path " + baseDir.toString());
-    return HoodieTableMetaClient.builder().setConf(
-        (Configuration) storage.getConf()).setBasePath(baseDir.toString()).build();
+    return HoodieTableMetaClient.builder()
+        .setConf(storage.getConf().newInstance()).setBasePath(baseDir.toString()).build();
   }
 
   public static FileStatus getFileStatus(HoodieBaseFile baseFile) throws IOException {
@@ -495,7 +498,7 @@ public class HoodieInputFormatUtils {
     StoragePath dataPath = dataFile.getPathInfo().getPath();
     try {
       if (dataFile.getFileSize() == 0) {
-        HoodieStorage storage = HoodieStorageUtils.getStorage(dataPath, conf);
+        HoodieStorage storage = HoodieStorageUtils.getStorage(dataPath, HadoopFSUtils.getStorageConf(conf));
         LOG.info("Refreshing file status " + dataFile.getPath());
         return new HoodieBaseFile(storage.getPathInfo(dataPath),
             dataFile.getBootstrapBaseFile().orElse(null));
@@ -523,7 +526,8 @@ public class HoodieInputFormatUtils {
     HashMap<String, StoragePathInfo> fullPathToInfoMap = new HashMap<>();
     // Iterate through the given commits.
     for (HoodieCommitMetadata metadata : metadataList) {
-      fullPathToInfoMap.putAll(metadata.getFullPathToInfo(hadoopConf, basePath.toString()));
+      fullPathToInfoMap.putAll(metadata.getFullPathToInfo(
+          HadoopFSUtils.getStorageConf(hadoopConf), basePath.toString()));
     }
     return new ArrayList<>(fullPathToInfoMap.values());
   }

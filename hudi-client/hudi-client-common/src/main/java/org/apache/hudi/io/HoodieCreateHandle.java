@@ -32,6 +32,7 @@ import org.apache.hudi.common.model.MetadataValues;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieInsertException;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.io.storage.HoodieFileWriter;
 import org.apache.hudi.io.storage.HoodieFileWriterFactory;
 import org.apache.hudi.storage.StoragePath;
@@ -104,7 +105,7 @@ public class HoodieCreateHandle<T, I, K, O> extends HoodieWriteHandle<T, I, K, O
       createMarkerFile(partitionPath,
           FSUtils.makeBaseFileName(this.instantTime, this.writeToken, this.fileId, hoodieTable.getBaseFileExtension()));
       this.fileWriter =
-          HoodieFileWriterFactory.getFileWriter(instantTime, path, hoodieTable.getHadoopConf(), config,
+          HoodieFileWriterFactory.getFileWriter(instantTime, path, hoodieTable.getStorageConf(), config,
               writeSchemaWithMetaFields, this.taskContextSupplier, config.getRecordMerger().getRecordType());
     } catch (IOException e) {
       throw new HoodieInsertException("Failed to initialize HoodieStorageWriter for path " + path, e);
@@ -244,7 +245,7 @@ public class HoodieCreateHandle<T, I, K, O> extends HoodieWriteHandle<T, I, K, O
     stat.setPath(new StoragePath(config.getBasePath()), path);
     stat.setTotalWriteErrors(writeStatus.getTotalErrorRecords());
 
-    long fileSize = FSUtils.getFileSize(fs, new Path(path.toUri()));
+    long fileSize = HadoopFSUtils.getFileSize(fs, new Path(path.toUri()));
     stat.setTotalWriteBytes(fileSize);
     stat.setFileSizeInBytes(fileSize);
 

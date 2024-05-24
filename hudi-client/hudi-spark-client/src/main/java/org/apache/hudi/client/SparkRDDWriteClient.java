@@ -29,6 +29,7 @@ import org.apache.hudi.common.model.HoodieKey;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieWriteStat;
 import org.apache.hudi.common.model.WriteOperationType;
+import org.apache.hudi.common.table.HoodieTableConfig;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieTimeline;
 import org.apache.hudi.common.util.Option;
@@ -39,8 +40,10 @@ import org.apache.hudi.hadoop.fs.HoodieWrapperFileSystem;
 import org.apache.hudi.index.HoodieIndex;
 import org.apache.hudi.index.SparkHoodieIndexFactory;
 import org.apache.hudi.metadata.HoodieTableMetadataWriter;
+import org.apache.hudi.metadata.MetadataPartitionType;
 import org.apache.hudi.metadata.SparkHoodieBackedTableMetadataWriter;
 import org.apache.hudi.metrics.DistributedRegistry;
+import org.apache.hudi.metrics.HoodieMetrics;
 import org.apache.hudi.table.BulkInsertPartitioner;
 import org.apache.hudi.table.HoodieSparkTable;
 import org.apache.hudi.table.HoodieTable;
@@ -139,8 +142,8 @@ public class SparkRDDWriteClient<T> extends
     preWrite(instantTime, WriteOperationType.UPSERT, table.getMetaClient());
     HoodieWriteMetadata<HoodieData<WriteStatus>> result = table.upsert(context, instantTime, HoodieJavaRDD.of(records));
     HoodieWriteMetadata<JavaRDD<WriteStatus>> resultRDD = result.clone(HoodieJavaRDD.getJavaRDD(result.getWriteStatuses()));
-    if (result.getIndexLookupDuration().isPresent()) {
-      metrics.updateIndexMetrics(LOOKUP_STR, result.getIndexLookupDuration().get().toMillis());
+    if (result.getSourceReadAndIndexDurationMs().isPresent()) {
+      metrics.updateSourceReadAndIndexMetrics(HoodieMetrics.DURATION_STR, result.getSourceReadAndIndexDurationMs().get());
     }
     return postWrite(resultRDD, instantTime, table);
   }
@@ -272,11 +275,11 @@ public class SparkRDDWriteClient<T> extends
   }
 
   @Override
-  protected void initMetadataTable(Option<String> instantTime) {
+  protected void initMetadataTable(Option<String> instantTime, HoodieTableMetaClient metaClient) {
     // Initialize Metadata Table to make sure it's bootstrapped _before_ the operation,
     // if it didn't exist before
     // See https://issues.apache.org/jira/browse/HUDI-3343 for more details
-    initializeMetadataTable(instantTime);
+    initializeMetadataTable(instantTime, metaClient);
   }
 
   /**
@@ -285,13 +288,31 @@ public class SparkRDDWriteClient<T> extends
    *
    * @param inFlightInstantTimestamp - The in-flight action responsible for the metadata table initialization
    */
-  private void initializeMetadataTable(Option<String> inFlightInstantTimestamp) {
+  private void initializeMetadataTable(Option<String> inFlightInstantTimestamp, HoodieTableMetaClient metaClient) {
     if (!config.isMetadataTableEnabled()) {
       return;
     }
+    // if metadata table is enabled, emit enablement metrics
+    HoodieTableConfig tableConfig = metaClient.getTableConfig();
+    if (tableConfig.isMetadataTableAvailable()) {
+      // if metadata table is available, lets emit partitions of interest
+      boolean isMetadataColStatsAvailable = false;
+      boolean isMetadataBloomFilterAvailable = false;
+      boolean isMetadataRliAvailable = false;
+      if (tableConfig.getMetadataPartitions().contains(MetadataPartitionType.COLUMN_STATS.getPartitionPath())) {
+        isMetadataColStatsAvailable = true;
+      }
+      if (tableConfig.getMetadataPartitions().contains(MetadataPartitionType.BLOOM_FILTERS.getPartitionPath())) {
+        isMetadataBloomFilterAvailable = true;
+      }
+      if (tableConfig.getMetadataPartitions().contains(MetadataPartitionType.RECORD_INDEX.getPartitionPath())) {
+        isMetadataRliAvailable = true;
+      }
+      metrics.emitMetadataEnablementMetrics(true, isMetadataColStatsAvailable, isMetadataBloomFilterAvailable, isMetadataRliAvailable);
+    }
 
-    try (HoodieTableMetadataWriter writer = SparkHoodieBackedTableMetadataWriter.create(context.getHadoopConf().get(), config,
-        context, inFlightInstantTimestamp)) {
+    try (HoodieTableMetadataWriter writer = SparkHoodieBackedTableMetadataWriter.create(
+        context.getStorageConf(), config, context, inFlightInstantTimestamp)) {
       if (writer.isInitialized()) {
         writer.performTableServices(inFlightInstantTimestamp);
       }

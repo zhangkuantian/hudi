@@ -55,12 +55,14 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
  * Generic tests for all {@link KafkaSource} to ensure all implementations properly handle offsets, fetch limits, failure modes, etc.
  */
-abstract class BaseTestKafkaSource extends SparkClientFunctionalTestHarness {
+public abstract class BaseTestKafkaSource extends SparkClientFunctionalTestHarness {
   protected static final String TEST_TOPIC_PREFIX = "hoodie_test_";
 
   protected final HoodieIngestionMetrics metrics = mock(HoodieIngestionMetrics.class);
@@ -80,11 +82,11 @@ abstract class BaseTestKafkaSource extends SparkClientFunctionalTestHarness {
     testUtils.teardown();
   }
 
-  abstract TypedProperties createPropsForKafkaSource(String topic, Long maxEventsToReadFromKafkaSource, String resetStrategy);
+  protected abstract TypedProperties createPropsForKafkaSource(String topic, Long maxEventsToReadFromKafkaSource, String resetStrategy);
 
-  abstract SourceFormatAdapter createSource(TypedProperties props);
+  protected abstract SourceFormatAdapter createSource(TypedProperties props);
 
-  abstract void sendMessagesToKafka(String topic, int count, int numPartitions);
+  protected abstract void sendMessagesToKafka(String topic, int count, int numPartitions);
 
   @Test
   public void testKafkaSource() {
@@ -297,6 +299,8 @@ abstract class BaseTestKafkaSource extends SparkClientFunctionalTestHarness {
     sendMessagesToKafka(topic, 1000, 2);
     InputBatch<JavaRDD<GenericRecord>> fetch1 = kafkaSource.fetchNewDataInAvroFormat(Option.empty(), 900);
     assertEquals(500, fetch1.getBatch().get().count());
+    verify(metrics, times(2)).updateStreamerSourceParallelism(4);
+    verify(metrics, times(2)).updateStreamerSourceBytesToBeIngestedInSyncRound(Long.MAX_VALUE);
   }
 
   static class TestSourceProfile implements SourceProfile<Long> {

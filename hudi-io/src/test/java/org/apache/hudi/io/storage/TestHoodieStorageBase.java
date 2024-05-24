@@ -163,11 +163,11 @@ public abstract class TestHoodieStorageBase {
       stream.flush();
     }
 
-    try (SeekableDataInputStream seekableStream = storage.openSeekable(path)) {
+    try (SeekableDataInputStream seekableStream = storage.openSeekable(path, true)) {
       validateSeekableDataInputStream(seekableStream, data);
     }
 
-    try (SeekableDataInputStream seekableStream = storage.openSeekable(path, 2)) {
+    try (SeekableDataInputStream seekableStream = storage.openSeekable(path, 2, true)) {
       validateSeekableDataInputStream(seekableStream, data);
     }
   }
@@ -322,15 +322,6 @@ public abstract class TestHoodieStorageBase {
     assertTrue(storage.deleteDirectory(path2));
     assertFalse(storage.exists(path2));
     assertFalse(storage.deleteDirectory(path2));
-  }
-
-  @Test
-  public void testMakeQualified() {
-    HoodieStorage storage = getStorage();
-    StoragePath path = new StoragePath("/tmp/testMakeQualified/1.file");
-    assertEquals(
-        new StoragePath("file:/tmp/testMakeQualified/1.file"),
-        storage.makeQualified(path));
   }
 
   @Test

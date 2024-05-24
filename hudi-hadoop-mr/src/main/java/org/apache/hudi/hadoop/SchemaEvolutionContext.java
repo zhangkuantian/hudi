@@ -26,6 +26,7 @@ import org.apache.hudi.common.util.Option;
 import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.TablePathUtils;
 import org.apache.hudi.exception.HoodieException;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.hadoop.realtime.AbstractRealtimeRecordReader;
 import org.apache.hudi.hadoop.realtime.RealtimeSplit;
 import org.apache.hudi.hadoop.utils.HoodieRealtimeRecordReaderUtils;
@@ -35,9 +36,9 @@ import org.apache.hudi.internal.schema.Types;
 import org.apache.hudi.internal.schema.action.InternalSchemaMerger;
 import org.apache.hudi.internal.schema.convert.AvroInternalSchemaConverter;
 import org.apache.hudi.internal.schema.utils.InternalSchemaUtils;
-import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.storage.HoodieStorage;
-import org.apache.hudi.storage.HoodieStorageUtils;
+import org.apache.hudi.storage.StoragePath;
+import org.apache.hudi.storage.hadoop.HoodieHadoopStorage;
 
 import org.apache.avro.Schema;
 import org.apache.hadoop.fs.FileSystem;
@@ -69,6 +70,8 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
+import static org.apache.hudi.hadoop.fs.HadoopFSUtils.convertToStoragePath;
 
 /**
  * This class is responsible for calculating names and types of fields that are actual at a certain point in time for hive.
@@ -113,11 +116,11 @@ public class SchemaEvolutionContext {
   private HoodieTableMetaClient setUpHoodieTableMetaClient() throws IOException {
     try {
       Path inputPath = ((FileSplit) split).getPath();
-      StoragePath path = new StoragePath(inputPath.toString());
       FileSystem fs = inputPath.getFileSystem(job);
-      HoodieStorage storage = HoodieStorageUtils.getStorage(fs);
-      Option<StoragePath> tablePath = TablePathUtils.getTablePath(storage, path);
-      return HoodieTableMetaClient.builder().setBasePath(tablePath.get().toString()).setConf(job).build();
+      HoodieStorage storage = new HoodieHadoopStorage(fs);
+      Option<StoragePath> tablePath = TablePathUtils.getTablePath(storage, convertToStoragePath(inputPath));
+      return HoodieTableMetaClient.builder().setBasePath(tablePath.get().toString())
+          .setConf(HadoopFSUtils.getStorageConfWithCopy(job)).build();
     } catch (Exception e) {
       LOG.warn(String.format("Not a valid hoodie table, table path: %s", ((FileSplit)split).getPath()), e);
       return null;

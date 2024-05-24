@@ -86,7 +86,7 @@ public class HoodieTimelineArchiver<T extends HoodieAvroPayload, I, K, O> {
     Pair<Integer, Integer> minAndMaxInstants = getMinAndMaxInstantsToKeep(table, metaClient);
     this.minInstantsToKeep = minAndMaxInstants.getLeft();
     this.maxInstantsToKeep = minAndMaxInstants.getRight();
-    this.metrics = new HoodieMetrics(config);
+    this.metrics = new HoodieMetrics(config, table.getStorageConf());
   }
 
   public int archiveIfRequired(HoodieEngineContext context) throws IOException {
@@ -228,7 +228,7 @@ public class HoodieTimelineArchiver<T extends HoodieAvroPayload, I, K, O> {
     if (table.isMetadataTable()) {
       HoodieTableMetaClient dataMetaClient = HoodieTableMetaClient.builder()
           .setBasePath(HoodieTableMetadata.getDatasetBasePath(config.getBasePath()))
-          .setConf(metaClient.getHadoopConf())
+          .setConf(metaClient.getStorageConf().newInstance())
           .build();
       Option<HoodieInstant> qualifiedEarliestInstant =
           TimelineUtils.getEarliestInstantForMetadataArchival(

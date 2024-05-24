@@ -19,7 +19,7 @@
 package org.apache.hudi.table.marker;
 
 import org.apache.hudi.client.common.HoodieSparkEngineContext;
-import org.apache.hudi.common.testutils.FileSystemTestUtils;
+import org.apache.hudi.common.testutils.HoodieTestTable;
 import org.apache.hudi.common.util.CollectionUtils;
 import org.apache.hudi.storage.HoodieStorageUtils;
 import org.apache.hudi.storage.StoragePath;
@@ -47,7 +47,7 @@ public class TestDirectWriteMarkers extends TestWriteMarkersBase {
     this.jsc = new JavaSparkContext(
         HoodieClientTestUtils.getSparkConfForTest(TestDirectWriteMarkers.class.getName()));
     this.context = new HoodieSparkEngineContext(jsc);
-    this.storage = HoodieStorageUtils.getStorage(metaClient.getBasePathV2(), metaClient.getHadoopConf());
+    this.storage = HoodieStorageUtils.getStorage(metaClient.getBasePathV2(), metaClient.getStorageConf());
     this.markerFolderPath = new StoragePath(Paths.get(metaClient.getMarkerFolderPath("000")).toUri());
     this.writeMarkers = new DirectWriteMarkers(
         storage, metaClient.getBasePathV2().toString(), markerFolderPath.toString(), "000");
@@ -61,7 +61,7 @@ public class TestDirectWriteMarkers extends TestWriteMarkersBase {
 
   @Override
   void verifyMarkersInFileSystem(boolean isTablePartitioned) throws IOException {
-    List<StoragePathInfo> markerFiles = FileSystemTestUtils.listRecursive(storage, markerFolderPath)
+    List<StoragePathInfo> markerFiles = HoodieTestTable.listRecursive(storage, markerFolderPath)
         .stream().filter(status -> status.getPath().getName().contains(".marker"))
         .sorted().collect(Collectors.toList());
     assertEquals(3, markerFiles.size());

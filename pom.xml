@@ -106,7 +106,8 @@
     <pulsar.spark.version>${pulsar.spark.scala12.version}</pulsar.spark.version>
     <pulsar.spark.scala11.version>2.4.5</pulsar.spark.scala11.version>
     <pulsar.spark.scala12.version>3.1.1.4</pulsar.spark.scala12.version>
-    <confluent.version>5.3.4</confluent.version>
+    <pulsar.spark.scala13.version>3.4.1.1</pulsar.spark.scala13.version>
+    <confluent.version>5.5.0</confluent.version>
     <glassfish.version>2.17</glassfish.version>
     <glassfish.el.version>3.0.1-b12</glassfish.el.version>
     <parquet.version>1.10.1</parquet.version>
@@ -137,7 +138,7 @@
     <http.version>4.4.1</http.version>
     <spark.version>${spark3.version}</spark.version>
     <spark2.version>2.4.4</spark2.version>
-    <spark3.version>3.4.1</spark3.version>
+    <spark3.version>3.5.1</spark3.version>
     <sparkbundle.version></sparkbundle.version>
     <flink1.18.version>1.18.0</flink1.18.version>
     <flink1.17.version>1.17.1</flink1.17.version>
@@ -165,8 +166,8 @@
     <spark30.version>3.0.2</spark30.version>
     <spark31.version>3.1.3</spark31.version>
     <spark32.version>3.2.3</spark32.version>
-    <spark33.version>3.3.1</spark33.version>
-    <spark34.version>3.4.1</spark34.version>
+    <spark33.version>3.3.4</spark33.version>
+    <spark34.version>3.4.3</spark34.version>
     <spark35.version>3.5.1</spark35.version>
     <hudi.spark.module>hudi-spark3.2.x</hudi.spark.module>
     <!-- NOTE: Different Spark versions might require different number of shared
@@ -175,10 +176,12 @@
     <hudi.spark.common.modules.1>hudi-spark3-common</hudi.spark.common.modules.1>
     <hudi.spark.common.modules.2>hudi-spark3.2plus-common</hudi.spark.common.modules.2>
     <avro.version>1.8.2</avro.version>
+    <bijection-avro.version>0.9.7</bijection-avro.version>
     <caffeine.version>2.9.1</caffeine.version>
     <commons.io.version>2.11.0</commons.io.version>
     <scala11.version>2.11.12</scala11.version>
     <scala12.version>2.12.10</scala12.version>
+    <scala13.version>2.13.8</scala13.version>
     <scala.version>${scala12.version}</scala.version>
     <scala.collection-compat.version>2.8.1</scala.collection-compat.version>
     <scala.binary.version>2.12</scala.binary.version>
@@ -930,6 +933,11 @@
         <artifactId>javax.el</artifactId>
         <version>${glassfish.el.version}</version>
         <scope>provided</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.glassfish.jersey.ext</groupId>
+        <artifactId>jersey-bean-validation</artifactId>
+        <version>${glassfish.version}</version>
       </dependency>
 
       <!-- Avro -->
@@ -1769,6 +1777,33 @@
           </exclusion>
         </exclusions>
       </dependency>
+
+      <!-- Confluent -->
+      <dependency>
+        <groupId>io.confluent</groupId>
+        <artifactId>kafka-avro-serializer</artifactId>
+        <version>${confluent.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.confluent</groupId>
+        <artifactId>common-config</artifactId>
+        <version>${confluent.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.confluent</groupId>
+        <artifactId>common-utils</artifactId>
+        <version>${confluent.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.confluent</groupId>
+        <artifactId>kafka-schema-registry-client</artifactId>
+        <version>${confluent.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.confluent</groupId>
+        <artifactId>kafka-protobuf-serializer</artifactId>
+        <version>${confluent.version}</version>
+      </dependency>
     </dependencies>
   </dependencyManagement>
   <repositories>
@@ -2204,6 +2239,46 @@
         </plugins>
       </build>
     </profile>
+    <profile>
+      <id>scala-2.13</id>
+      <properties>
+        <scala.version>${scala13.version}</scala.version>
+        <scala.binary.version>2.13</scala.binary.version>
+        <pulsar.spark.version>${pulsar.spark.scala13.version}</pulsar.spark.version>
+      </properties>
+      <activation>
+        <property>
+          <name>scala-2.13</name>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-enforcer-plugin</artifactId>
+            <version>${maven-enforcer-plugin.version}</version>
+            <executions>
+              <execution>
+                <id>enforce-versions</id>
+                <goals>
+                  <goal>enforce</goal>
+                </goals>
+                <configuration>
+                  <rules>
+                    <bannedDependencies>
+                      <excludes combine.children="append">
+                        <exclude>*:*_2.11</exclude>
+                        <exclude>*:*_2.12</exclude>
+                      </excludes>
+                    </bannedDependencies>
+                  </rules>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
 
     <!-- "spark2" is an alias of "spark2.4" -->
     <!-- NOTE: This profile is deprecated and soon will be removed -->
@@ -2574,8 +2649,7 @@
         <spark.version>${spark3.version}</spark.version>
         <sparkbundle.version>3.5</sparkbundle.version>
         <scala12.version>2.12.18</scala12.version>
-        <scala.version>${scala12.version}</scala.version>
-        <scala.binary.version>2.12</scala.binary.version>
+        <scala13.version>2.13.8</scala13.version>
         <hudi.spark.module>hudi-spark3.5.x</hudi.spark.module>
         <!-- This glob has to include hudi-spark3-common, hudi-spark3.2plus-common -->
         <hudi.spark.common.modules.1>hudi-spark3-common</hudi.spark.common.modules.1>
@@ -2596,7 +2670,6 @@
         <fasterxml.jackson.databind.version>${fasterxml.spark3.version}</fasterxml.jackson.databind.version>
         <fasterxml.jackson.module.scala.version>${fasterxml.spark3.version}</fasterxml.jackson.module.scala.version>
         <fasterxml.jackson.dataformat.yaml.version>${fasterxml.spark3.version}</fasterxml.jackson.dataformat.yaml.version>
-        <pulsar.spark.version>${pulsar.spark.scala12.version}</pulsar.spark.version>
         <log4j2.version>2.20.0</log4j2.version>
         <slf4j.version>2.0.7</slf4j.version>
         <skip.hudi-spark2.unit.tests>true</skip.hudi-spark2.unit.tests>

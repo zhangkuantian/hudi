@@ -36,7 +36,6 @@ import org.apache.hudi.common.util.Option;
 import org.apache.hudi.config.HoodieCompactionConfig;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.exception.TableNotFoundException;
-import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.table.action.compact.strategy.UnBoundedCompactionStrategy;
 
 import org.apache.avro.Schema;
@@ -61,7 +60,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 
-import static org.apache.hudi.common.table.HoodieTableMetaClient.METAFOLDER_NAME;
 import static org.apache.hudi.common.util.StringUtils.getUTF8Bytes;
 
 /**
@@ -139,7 +137,7 @@ public class TableCommand {
 
     boolean existing = false;
     try {
-      HoodieTableMetaClient.builder().setConf(HoodieCLI.conf).setBasePath(path).build();
+      HoodieTableMetaClient.builder().setConf(HoodieCLI.conf.newInstance()).setBasePath(path).build();
       existing = true;
     } catch (TableNotFoundException dfe) {
       // expected
@@ -156,7 +154,7 @@ public class TableCommand {
         .setArchiveLogFolder(archiveFolder)
         .setPayloadClassName(payloadClass)
         .setTimelineLayoutVersion(layoutVersion)
-        .initTable(HoodieCLI.conf, path);
+        .initTable(HoodieCLI.conf.newInstance(), path);
     // Now connect to ensure loading works
     return connect(path, layoutVersion, false, 0, 0, 0,
         "WAIT_TO_ADJUST_SKEW", 200L, true);
@@ -212,8 +210,7 @@ public class TableCommand {
   public String recoverTableConfig() throws IOException {
     HoodieCLI.refreshTableMetadata();
     HoodieTableMetaClient client = HoodieCLI.getTableMetaClient();
-    StoragePath metaPathDir = new StoragePath(client.getBasePath(), METAFOLDER_NAME);
-    HoodieTableConfig.recover(client.getStorage(), metaPathDir);
+    HoodieTableConfig.recover(client.getStorage(), client.getMetaPath());
     return descTable();
   }
 
@@ -228,8 +225,7 @@ public class TableCommand {
     try (FileInputStream fileInputStream = new FileInputStream(updatePropsFilePath)) {
       updatedProps.load(fileInputStream);
     }
-    StoragePath metaPathDir = new StoragePath(client.getBasePath(), METAFOLDER_NAME);
-    HoodieTableConfig.update(client.getStorage(), metaPathDir, updatedProps);
+    HoodieTableConfig.update(client.getStorage(), client.getMetaPath(), updatedProps);
 
     HoodieCLI.refreshTableMetadata();
     Map<String, String> newProps = HoodieCLI.getTableMetaClient().getTableConfig().propsMap();
@@ -244,8 +240,7 @@ public class TableCommand {
     Map<String, String> oldProps = client.getTableConfig().propsMap();
 
     Set<String> deleteConfigs = Arrays.stream(csConfigs.split(",")).collect(Collectors.toSet());
-    StoragePath metaPathDir = new StoragePath(client.getBasePath(), METAFOLDER_NAME);
-    HoodieTableConfig.delete(client.getStorage(), metaPathDir, deleteConfigs);
+    HoodieTableConfig.delete(client.getStorage(), client.getMetaPath(), deleteConfigs);
 
     HoodieCLI.refreshTableMetadata();
     Map<String, String> newProps = HoodieCLI.getTableMetaClient().getTableConfig().propsMap();
@@ -366,8 +361,7 @@ public class TableCommand {
     updatedProps.putAll(oldProps);
     // change the table type to target type
     updatedProps.put(HoodieTableConfig.TYPE.key(), targetType);
-    StoragePath metaPathDir = new StoragePath(client.getBasePath(), METAFOLDER_NAME);
-    HoodieTableConfig.update(client.getStorage(), metaPathDir, updatedProps);
+    HoodieTableConfig.update(client.getStorage(), client.getMetaPath(), updatedProps);
 
     HoodieCLI.refreshTableMetadata();
     Map<String, String> newProps = HoodieCLI.getTableMetaClient().getTableConfig().propsMap();

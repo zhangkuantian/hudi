@@ -113,7 +113,7 @@ public class TestHoodieSparkMergeOnReadTableRollback extends SparkClientFunction
       client.commit(newCommitTime, jsc().parallelize(statuses));
 
       metaClient = HoodieTableMetaClient.reload(metaClient);
-      Option<HoodieInstant> commit = metaClient.getActiveTimeline().getCommitTimeline().firstInstant();
+      Option<HoodieInstant> commit = metaClient.getActiveTimeline().getCommitAndReplaceTimeline().firstInstant();
       assertTrue(commit.isPresent());
       assertEquals("001", commit.get().getTimestamp(), "commit should be 001");
 
@@ -189,7 +189,7 @@ public class TestHoodieSparkMergeOnReadTableRollback extends SparkClientFunction
       assertTrue(deltaCommit.isPresent());
       assertEquals("000000001", deltaCommit.get().getTimestamp(), "Delta commit should be 000000001");
 
-      Option<HoodieInstant> commit = metaClient.getActiveTimeline().getCommitTimeline().firstInstant();
+      Option<HoodieInstant> commit = metaClient.getActiveTimeline().getCommitAndReplaceTimeline().firstInstant();
       assertFalse(commit.isPresent());
 
       List<StoragePathInfo> allFiles = listAllBaseFilesInPath(hoodieTable);
@@ -219,7 +219,7 @@ public class TestHoodieSparkMergeOnReadTableRollback extends SparkClientFunction
         List<String> inputPaths = tableView.getLatestBaseFiles()
             .map(baseFile -> new Path(baseFile.getPath()).getParent().toString())
             .collect(Collectors.toList());
-        List<GenericRecord> recordsRead = HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(hadoopConf(), inputPaths,
+        List<GenericRecord> recordsRead = HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(storageConf(), inputPaths,
             basePath());
         assertEquals(200, recordsRead.size());
 
@@ -241,7 +241,7 @@ public class TestHoodieSparkMergeOnReadTableRollback extends SparkClientFunction
             .map(baseFile -> new Path(baseFile.getPath()).getParent().toString())
             .collect(Collectors.toList());
         recordsRead =
-            HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(hadoopConf(), inputPaths,
+            HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(storageConf(), inputPaths,
                 basePath());
         assertEquals(200, recordsRead.size());
       }
@@ -260,7 +260,7 @@ public class TestHoodieSparkMergeOnReadTableRollback extends SparkClientFunction
         List<String> inputPaths = tableView.getLatestBaseFiles()
             .map(baseFile -> new Path(baseFile.getPath()).getParent().toString())
             .collect(Collectors.toList());
-        List<GenericRecord> recordsRead = HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(hadoopConf(), inputPaths,
+        List<GenericRecord> recordsRead = HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(storageConf(), inputPaths,
             basePath());
         assertEquals(200, recordsRead.size());
 
@@ -290,7 +290,7 @@ public class TestHoodieSparkMergeOnReadTableRollback extends SparkClientFunction
             .map(baseFile -> new Path(baseFile.getPath()).getParent().toString())
             .collect(Collectors.toList());
         recordsRead =
-            HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(hadoopConf(), inputPaths,
+            HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(storageConf(), inputPaths,
                 basePath());
         // check that the number of records read is still correct after rollback operation
         assertEquals(200, recordsRead.size());
@@ -377,7 +377,7 @@ public class TestHoodieSparkMergeOnReadTableRollback extends SparkClientFunction
       assertEquals(200, getTotalRecordsWritten(instantCommitMetadataPairOpt.get().getValue()));
 
       Option<HoodieInstant> commit =
-          metaClient.getActiveTimeline().getCommitTimeline().firstInstant();
+          metaClient.getActiveTimeline().getCommitAndReplaceTimeline().firstInstant();
       assertFalse(commit.isPresent());
 
       HoodieTable hoodieTable = HoodieSparkTable.create(cfg, context(), metaClient);
@@ -413,7 +413,7 @@ public class TestHoodieSparkMergeOnReadTableRollback extends SparkClientFunction
         List<String> dataFiles = tableView.getLatestBaseFiles()
             .map(baseFile -> new Path(baseFile.getPath()).getParent().toString())
             .collect(Collectors.toList());
-        List<GenericRecord> recordsRead = HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(hadoopConf(), dataFiles,
+        List<GenericRecord> recordsRead = HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(storageConf(), dataFiles,
             basePath());
         assertEquals(200, recordsRead.size());
 
@@ -694,7 +694,7 @@ public class TestHoodieSparkMergeOnReadTableRollback extends SparkClientFunction
         .map(hf -> new Path(hf.getPath()).getParent().toString())
         .collect(Collectors.toList());
     List<GenericRecord> recordsRead =
-        HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(hadoopConf(), inputPaths,
+        HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(storageConf(), inputPaths,
             basePath());
     assertRecords(expectedRecords, recordsRead);
   }
@@ -790,7 +790,7 @@ public class TestHoodieSparkMergeOnReadTableRollback extends SparkClientFunction
       for (HoodieInstant.State state : Arrays.asList(HoodieInstant.State.REQUESTED, HoodieInstant.State.INFLIGHT)) {
         HoodieInstant toCopy = new HoodieInstant(state, HoodieTimeline.DELTA_COMMIT_ACTION, lastCommitTime);
         File file = Files.createTempFile(tempFolder, null, null).toFile();
-        fs().copyToLocalFile(new Path(metaClient.getMetaPath(), toCopy.getFileName()),
+        fs().copyToLocalFile(new Path(metaClient.getMetaPath().toString(), toCopy.getFileName()),
             new Path(file.getAbsolutePath()));
         fileNameMap.put(file.getAbsolutePath(), toCopy.getFileName());
       }
@@ -816,7 +816,7 @@ public class TestHoodieSparkMergeOnReadTableRollback extends SparkClientFunction
       for (Map.Entry<String, String> entry : fileNameMap.entrySet()) {
         try {
           fs().copyFromLocalFile(new Path(entry.getKey()),
-              new Path(metaClient.getMetaPath(), entry.getValue()));
+              new Path(metaClient.getMetaPath().toString(), entry.getValue()));
         } catch (IOException e) {
           throw new HoodieIOException("Error copying state from local disk.", e);
         }

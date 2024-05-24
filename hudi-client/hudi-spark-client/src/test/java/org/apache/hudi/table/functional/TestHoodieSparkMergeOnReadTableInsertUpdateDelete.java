@@ -51,6 +51,7 @@ import org.apache.hudi.common.testutils.SchemaTestUtil;
 import org.apache.hudi.common.util.Option;
 import org.apache.hudi.config.HoodieCompactionConfig;
 import org.apache.hudi.config.HoodieWriteConfig;
+import org.apache.hudi.hadoop.fs.HadoopFSUtils;
 import org.apache.hudi.index.HoodieIndex;
 import org.apache.hudi.storage.StoragePathInfo;
 import org.apache.hudi.table.HoodieSparkTable;
@@ -290,7 +291,7 @@ public class TestHoodieSparkMergeOnReadTableInsertUpdateDelete extends SparkClie
       assertTrue(deltaCommit.isPresent());
       assertEquals("001", deltaCommit.get().getTimestamp(), "Delta commit should be 001");
 
-      Option<HoodieInstant> commit = metaClient.getActiveTimeline().getCommitTimeline().firstInstant();
+      Option<HoodieInstant> commit = metaClient.getActiveTimeline().getCommitAndReplaceTimeline().firstInstant();
       assertFalse(commit.isPresent());
 
       List<StoragePathInfo> allFiles = listAllBaseFilesInPath(hoodieTable);
@@ -333,7 +334,7 @@ public class TestHoodieSparkMergeOnReadTableInsertUpdateDelete extends SparkClie
       assertTrue(deltaCommit.isPresent());
       assertEquals("004", deltaCommit.get().getTimestamp(), "Latest Delta commit should be 004");
 
-      commit = metaClient.getActiveTimeline().getCommitTimeline().firstInstant();
+      commit = metaClient.getActiveTimeline().getCommitAndReplaceTimeline().firstInstant();
       assertFalse(commit.isPresent());
 
       allFiles = listAllBaseFilesInPath(hoodieTable);
@@ -345,7 +346,7 @@ public class TestHoodieSparkMergeOnReadTableInsertUpdateDelete extends SparkClie
           .map(baseFile -> new Path(baseFile.getPath()).getParent().toString())
           .collect(Collectors.toList());
       List<GenericRecord> recordsRead =
-          HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(hadoopConf(), inputPaths, basePath(), new JobConf(hadoopConf()), true, populateMetaFields);
+          HoodieMergeOnReadTestUtils.getRecordsUsingInputFormat(storageConf(), inputPaths, basePath(), new JobConf(storageConf().unwrap()), true, populateMetaFields);
       // Wrote 20 records and deleted 20 records, so remaining 20-20 = 0
       assertEquals(0, recordsRead.size(), "Must contain 0 records");
     }
@@ -375,7 +376,7 @@ public class TestHoodieSparkMergeOnReadTableInsertUpdateDelete extends SparkClie
       // inject a fake log file to test marker file for log file
       HoodieDeltaWriteStat correctWriteStat =
           (HoodieDeltaWriteStat) statuses.map(WriteStatus::getStat).take(1).get(0);
-      assertTrue(FSUtils.isLogFile(new Path(correctWriteStat.getPath())));
+      assertTrue(HadoopFSUtils.isLogFile(new Path(correctWriteStat.getPath())));
       HoodieLogFile correctLogFile = new HoodieLogFile(correctWriteStat.getPath());
       String correctWriteToken = FSUtils.getWriteTokenFromLogPath(correctLogFile.getPath());
 

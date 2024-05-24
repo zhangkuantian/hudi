@@ -31,7 +31,6 @@ import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.io.HoodieBootstrapHandle;
 import org.apache.hudi.io.storage.HoodieFileReader;
-import org.apache.hudi.io.storage.HoodieFileReaderFactory;
 import org.apache.hudi.keygen.KeyGeneratorInterface;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.table.HoodieTable;
@@ -40,6 +39,7 @@ import org.apache.hudi.util.ExecutorFactory;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.parquet.avro.AvroSchemaConverter;
 import org.apache.parquet.format.converter.ParquetMetadataConverter;
@@ -57,6 +57,7 @@ import java.io.IOException;
 import java.util.function.Function;
 
 import static org.apache.hudi.io.HoodieBootstrapHandle.METADATA_BOOTSTRAP_RECORD_SCHEMA;
+import static org.apache.hudi.io.storage.HoodieSparkIOFactory.getHoodieSparkIOFactory;
 
 class ParquetBootstrapMetadataHandler extends BaseBootstrapMetadataHandler {
 
@@ -67,7 +68,7 @@ class ParquetBootstrapMetadataHandler extends BaseBootstrapMetadataHandler {
   @Override
   Schema getAvroSchema(StoragePath sourceFilePath) throws IOException {
     ParquetMetadata readFooter = ParquetFileReader.readFooter(
-        table.getHadoopConf(), new Path(sourceFilePath.toUri()),
+        (Configuration) table.getStorageConf().unwrap(), new Path(sourceFilePath.toUri()),
         ParquetMetadataConverter.NO_FILTER);
     MessageType parquetSchema = readFooter.getFileMetaData().getSchema();
     return new AvroSchemaConverter().convert(parquetSchema);
@@ -81,8 +82,8 @@ class ParquetBootstrapMetadataHandler extends BaseBootstrapMetadataHandler {
                                   Schema schema) throws Exception {
     HoodieRecord.HoodieRecordType recordType = table.getConfig().getRecordMerger().getRecordType();
 
-    HoodieFileReader reader = HoodieFileReaderFactory.getReaderFactory(recordType)
-        .getFileReader(table.getConfig(), table.getHadoopConf(), sourceFilePath);
+    HoodieFileReader reader = getHoodieSparkIOFactory(table.getStorageConf()).getReaderFactory(recordType)
+        .getFileReader(table.getConfig(), sourceFilePath);
 
     HoodieExecutor<Void> executor = null;
     try {

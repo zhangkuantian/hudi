@@ -50,7 +50,7 @@ import org.apache.hudi.exception.TableNotFoundException;
 import org.apache.hudi.expression.BindVisitor;
 import org.apache.hudi.expression.Expression;
 import org.apache.hudi.internal.schema.Types;
-import org.apache.hudi.io.storage.HoodieFileReaderFactory;
+import org.apache.hudi.io.storage.HoodieIOFactory;
 import org.apache.hudi.io.storage.HoodieSeekingFileReader;
 import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.util.Transient;
@@ -124,7 +124,7 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
     } else if (this.metadataMetaClient == null) {
       try {
         this.metadataMetaClient = HoodieTableMetaClient.builder()
-            .setConf(getHadoopConf())
+            .setConf(getStorageConf().newInstance())
             .setBasePath(metadataBasePath)
             .build();
         this.metadataFileSystemView = getFileSystemView(metadataMetaClient);
@@ -605,9 +605,9 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
     // If the base file is present then create a reader
     Option<HoodieBaseFile> basefile = slice.getBaseFile();
     if (basefile.isPresent()) {
-      String baseFilePath = basefile.get().getPath();
-      baseFileReader = (HoodieSeekingFileReader<?>) HoodieFileReaderFactory.getReaderFactory(HoodieRecordType.AVRO)
-          .getFileReader(DEFAULT_HUDI_CONFIG_FOR_READER, getHadoopConf(), new StoragePath(baseFilePath));
+      StoragePath baseFilePath = basefile.get().getStoragePath();
+      baseFileReader = (HoodieSeekingFileReader<?>) HoodieIOFactory.getIOFactory(storageConf).getReaderFactory(HoodieRecordType.AVRO)
+          .getFileReader(DEFAULT_HUDI_CONFIG_FOR_READER, baseFilePath);
       baseFileOpenMs = timer.endTimer();
       LOG.info(String.format("Opened metadata base file from %s at instant %s in %d ms", baseFilePath,
           basefile.get().getCommitTime(), baseFileOpenMs));
@@ -641,7 +641,7 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
     // Load the schema
     Schema schema = HoodieAvroUtils.addMetadataFields(HoodieMetadataRecord.getClassSchema());
     HoodieCommonConfig commonConfig = HoodieCommonConfig.newBuilder().fromProperties(metadataConfig.getProps()).build();
-    HoodieMetadataLogRecordReader logRecordScanner = HoodieMetadataLogRecordReader.newBuilder()
+    HoodieMetadataLogRecordReader logRecordScanner = HoodieMetadataLogRecordReader.newBuilder(partitionName)
         .withStorage(metadataMetaClient.getStorage())
         .withBasePath(metadataBasePath)
         .withLogFilePaths(sortedLogFilePaths)
@@ -655,7 +655,7 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
         .withLogBlockTimestamps(validInstantTimestamps)
         .enableFullScan(allowFullScan)
         .withPartition(partitionName)
-        .withEnableOptimizedLogBlocksScan(metadataConfig.doEnableOptimizedLogBlocksScan())
+        .withEnableOptimizedLogBlocksScan(metadataConfig.isOptimizedLogBlocksScanEnabled())
         .withTableMetaClient(metadataMetaClient)
         .build();
 
@@ -753,7 +753,7 @@ public class HoodieBackedTableMetadata extends BaseTableMetadata {
   @Override
   public Option<String> getLatestCompactionTime() {
     if (metadataMetaClient != null) {
-      Option<HoodieInstant> latestCompaction = metadataMetaClient.getActiveTimeline().getCommitTimeline().filterCompletedInstants().lastInstant();
+      Option<HoodieInstant> latestCompaction = metadataMetaClient.getActiveTimeline().getCommitAndReplaceTimeline().filterCompletedInstants().lastInstant();
       if (latestCompaction.isPresent()) {
         return Option.of(latestCompaction.get().getTimestamp());
       }

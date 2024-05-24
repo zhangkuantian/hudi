@@ -19,18 +19,20 @@ package org.apache.spark.sql.hudi.dml
 
 import org.apache.hudi.DataSourceWriteOptions._
 import org.apache.hudi.client.common.HoodieSparkEngineContext
+import org.apache.hudi.common.config.HoodieMetadataConfig
 import org.apache.hudi.common.model.HoodieRecord.HoodieRecordType
 import org.apache.hudi.common.model.{HoodieRecord, WriteOperationType}
+import org.apache.hudi.common.table.{HoodieTableConfig, TableSchemaResolver}
 import org.apache.hudi.common.table.timeline.HoodieInstant
-import org.apache.hudi.common.table.{HoodieTableMetaClient, TableSchemaResolver}
 import org.apache.hudi.common.util.{Option => HOption}
 import org.apache.hudi.config.{HoodieClusteringConfig, HoodieIndexConfig, HoodieWriteConfig}
 import org.apache.hudi.exception.{HoodieDuplicateKeyException, HoodieException}
 import org.apache.hudi.execution.bulkinsert.BulkInsertSortMode
 import org.apache.hudi.index.HoodieIndex.IndexType
+import org.apache.hudi.testutils.HoodieClientTestUtils.createMetaClient
 import org.apache.hudi.{DataSourceWriteOptions, HoodieCLIUtils, HoodieSparkUtils}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerStageSubmitted}
-import org.apache.spark.sql.SaveMode
+import org.apache.spark.sql.{Row, SaveMode}
 import org.apache.spark.sql.hudi.HoodieSqlCommonUtils
 import org.apache.spark.sql.hudi.command.HoodieSparkValidateDuplicateKeyRecordMerger
 import org.apache.spark.sql.hudi.common.HoodieSparkSqlTestBase
@@ -217,10 +219,7 @@ class TestInsertTable extends HoodieSparkSqlTestBase {
            | select 20 as price, 2000 as ts, 2 as id, 'a2' as name
               """.stripMargin)
       // should not mess with the original order after write the out-of-order data.
-      val metaClient = HoodieTableMetaClient.builder()
-        .setBasePath(tmp.getCanonicalPath)
-        .setConf(spark.sessionState.newHadoopConf())
-        .build()
+      val metaClient = createMetaClient(spark, tmp.getCanonicalPath)
       val schema = HoodieSqlCommonUtils.getTableSqlSchema(metaClient).get
       assert(schema.getFieldIndex("id").contains(0))
       assert(schema.getFieldIndex("price").contains(2))
@@ -265,10 +264,7 @@ class TestInsertTable extends HoodieSparkSqlTestBase {
            | select 1 as id, '2021-01-05' as dt, 'a1' as name, 10 as price, 1000 as ts
         """.stripMargin)
       // should not mess with the original order after write the out-of-order data.
-      val metaClient = HoodieTableMetaClient.builder()
-        .setBasePath(tmp.getCanonicalPath)
-        .setConf(spark.sessionState.newHadoopConf())
-        .build()
+      val metaClient = createMetaClient(spark, tmp.getCanonicalPath)
       val schema = HoodieSqlCommonUtils.getTableSqlSchema(metaClient).get
       assert(schema.getFieldIndex("id").contains(0))
       assert(schema.getFieldIndex("price").contains(2))
@@ -771,10 +767,7 @@ class TestInsertTable extends HoodieSparkSqlTestBase {
       checkAnswer(s"select id, name, price from $tableName")(
         Seq(1, "a1", 10.0)
       )
-      val metaClient = HoodieTableMetaClient.builder()
-        .setBasePath(tmp.getCanonicalPath)
-        .setConf(spark.sessionState.newHadoopConf())
-        .build()
+      val metaClient = createMetaClient(spark, tmp.getCanonicalPath)
       assertResult(tableName)(metaClient.getTableConfig.getTableName)
     }
   }
@@ -1063,6 +1056,57 @@ class TestInsertTable extends HoodieSparkSqlTestBase {
     }
   }
 
+  test("Test combine before bulk insert") {
+    withTempDir { tmp => {
+      Seq(true, false).foreach { combineConfig => {
+        Seq(true, false).foreach { populateMetaConfig => {
+          import spark.implicits._
+
+          val tableName = generateTableName
+          val tablePath = s"${tmp.getCanonicalPath}/$tableName"
+
+          spark.sql(
+            s"""
+               |create table $tableName (
+               |  id int,
+               |  name string,
+               |  value double,
+               |  ts long
+               |) using hudi
+               | location '${tablePath}'
+               | tblproperties (
+               |  primaryKey = 'id',
+               |  preCombineField = 'ts'
+               | )
+               |""".stripMargin)
+
+          val rowsWithSimilarKey = Seq((1, "a1", 10.0, 1000L), (1, "a1", 11.0, 1001L))
+          rowsWithSimilarKey.toDF("id", "name", "value", "ts")
+            .write.format("hudi")
+            // common settings
+            .option(HoodieWriteConfig.TBL_NAME.key, tableName)
+            .option(TABLE_TYPE.key, COW_TABLE_TYPE_OPT_VAL)
+            .option(RECORDKEY_FIELD.key, "id")
+            .option(PRECOMBINE_FIELD.key, "ts")
+            .option(HoodieWriteConfig.BULKINSERT_PARALLELISM_VALUE.key, "1")
+            // test specific settings
+            .option(OPERATION.key, WriteOperationType.BULK_INSERT.value)
+            .option(HoodieWriteConfig.COMBINE_BEFORE_INSERT.key, combineConfig.toString)
+            .option(HoodieTableConfig.POPULATE_META_FIELDS.key, populateMetaConfig.toString)
+            .mode(SaveMode.Append)
+            .save(tablePath)
+
+          val countRows = spark.sql(s"select id, name, value, ts from $tableName").count()
+          if (combineConfig) {
+            assertResult(1)(countRows)
+          } else {
+            assertResult(rowsWithSimilarKey.length)(countRows)
+          }
+        }}
+      }}
+    }}
+  }
+
   test("Test bulk insert with empty dataset") {
     withSQLConf(SPARK_SQL_INSERT_INTO_OPERATION.key -> WriteOperationType.BULK_INSERT.value()) {
       withTempDir { tmp =>
@@ -1326,10 +1370,7 @@ class TestInsertTable extends HoodieSparkSqlTestBase {
           .mode(SaveMode.Overwrite)
           .save(tablePath)
 
-        val metaClient = HoodieTableMetaClient.builder()
-          .setBasePath(tablePath)
-          .setConf(spark.sessionState.newHadoopConf())
-          .build()
+        val metaClient = createMetaClient(spark, tablePath)
 
         assertResult(true)(new TableSchemaResolver(metaClient).hasOperationField)
 

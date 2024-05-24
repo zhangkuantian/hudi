@@ -46,7 +46,6 @@ import org.apache.hudi.common.util.collection.ClosableIterator;
 import org.apache.hudi.common.util.collection.ExternalSpillableMap;
 import org.apache.hudi.config.HoodieWriteConfig;
 import org.apache.hudi.io.storage.HoodieAvroHFileReaderImplBase;
-import org.apache.hudi.io.storage.HoodieFileReaderFactory;
 import org.apache.hudi.metadata.HoodieBackedTableMetadata;
 import org.apache.hudi.metadata.HoodieMetadataLogRecordReader;
 import org.apache.hudi.metadata.HoodieMetadataPayload;
@@ -59,8 +58,6 @@ import org.apache.hudi.table.HoodieTable;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.IndexedRecord;
-import org.apache.parquet.avro.AvroSchemaConverter;
-import org.apache.parquet.schema.MessageType;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -89,6 +86,7 @@ import static org.apache.hudi.common.model.WriteOperationType.COMPACT;
 import static org.apache.hudi.common.model.WriteOperationType.INSERT;
 import static org.apache.hudi.common.model.WriteOperationType.UPSERT;
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.CLEAN_ACTION;
+import static org.apache.hudi.io.storage.HoodieSparkIOFactory.getHoodieSparkIOFactory;
 import static org.apache.hudi.metadata.MetadataPartitionType.FILES;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -255,10 +253,7 @@ public class TestHoodieBackedTableMetadata extends TestHoodieMetadataBase {
     // 2nd commit
     doWriteOperation(testTable, "0000001", INSERT);
 
-    final HoodieTableMetaClient metadataMetaClient = HoodieTableMetaClient.builder()
-        .setConf(hadoopConf)
-        .setBasePath(metadataTableBasePath)
-        .build();
+    final HoodieTableMetaClient metadataMetaClient = createMetaClient(metadataTableBasePath);
     HoodieWriteConfig metadataTableWriteConfig = getMetadataWriteConfig(writeConfig);
     metadataMetaClient.reloadActiveTimeline();
     final HoodieTable table = HoodieSparkTable.create(metadataTableWriteConfig, context, metadataMetaClient);
@@ -328,10 +323,7 @@ public class TestHoodieBackedTableMetadata extends TestHoodieMetadataBase {
     HoodieCommitMetadata commitMetadata2 =
         testTable.doWriteOperation(instant2, BULK_INSERT, emptyList(), asList(partition), 1);
 
-    final HoodieTableMetaClient metadataMetaClient = HoodieTableMetaClient.builder()
-        .setConf(hadoopConf)
-        .setBasePath(metadataTableBasePath)
-        .build();
+    final HoodieTableMetaClient metadataMetaClient = createMetaClient(metadataTableBasePath);
     while (getNumCompactions(metadataMetaClient) == 0) {
       // Write until the compaction happens in the metadata table
       testTable.doWriteOperation(
@@ -389,7 +381,7 @@ public class TestHoodieBackedTableMetadata extends TestHoodieMetadataBase {
 
   private Set<String> getFilePathsInPartition(String partition) throws IOException {
     HoodieBackedTableMetadata tableMetadata = new HoodieBackedTableMetadata(
-        new HoodieLocalEngineContext(hadoopConf),
+        new HoodieLocalEngineContext(storageConf),
         HoodieMetadataConfig.newBuilder().enable(true).build(),
         basePath);
     return tableMetadata.getAllFilesInPartition(new StoragePath(basePath, partition))
@@ -459,14 +451,13 @@ public class TestHoodieBackedTableMetadata extends TestHoodieMetadataBase {
   private void verifyMetadataRawRecords(HoodieTable table, List<HoodieLogFile> logFiles) throws IOException {
     for (HoodieLogFile logFile : logFiles) {
       List<StoragePathInfo> pathInfoList = storage.listDirectEntries(logFile.getPath());
-      MessageType writerSchemaMsg =
+      Schema writerSchema  =
           TableSchemaResolver.readSchemaFromLogFile(storage, logFile.getPath());
-      if (writerSchemaMsg == null) {
+      if (writerSchema == null) {
         // not a data block
         continue;
       }
 
-      Schema writerSchema = new AvroSchemaConverter().convert(writerSchemaMsg);
       try (HoodieLogFormat.Reader logFileReader = HoodieLogFormat.newReader(storage,
           new HoodieLogFile(pathInfoList.get(0).getPath()), writerSchema)) {
         while (logFileReader.hasNext()) {
@@ -500,7 +491,7 @@ public class TestHoodieBackedTableMetadata extends TestHoodieMetadataBase {
    */
   private void verifyMetadataMergedRecords(HoodieTableMetaClient metadataMetaClient, List<String> logFilePaths, String latestCommitTimestamp) {
     Schema schema = HoodieAvroUtils.addMetadataFields(HoodieMetadataRecord.getClassSchema());
-    HoodieMetadataLogRecordReader logRecordReader = HoodieMetadataLogRecordReader.newBuilder()
+    HoodieMetadataLogRecordReader logRecordReader = HoodieMetadataLogRecordReader.newBuilder(FILES.getPartitionPath())
         .withStorage(metadataMetaClient.getStorage())
         .withBasePath(metadataMetaClient.getBasePath())
         .withLogFilePaths(logFilePaths)
@@ -536,8 +527,9 @@ public class TestHoodieBackedTableMetadata extends TestHoodieMetadataBase {
     final HoodieBaseFile baseFile = fileSlices.get(0).getBaseFile().get();
 
     HoodieAvroHFileReaderImplBase hoodieHFileReader = (HoodieAvroHFileReaderImplBase)
-        HoodieFileReaderFactory.getReaderFactory(HoodieRecordType.AVRO).getFileReader(
-            table.getConfig(), context.getHadoopConf().get(), new StoragePath(baseFile.getPath()));
+        getHoodieSparkIOFactory(context.getStorageConf())
+            .getReaderFactory(HoodieRecordType.AVRO)
+            .getFileReader(table.getConfig(), new StoragePath(baseFile.getPath()));
     List<IndexedRecord> records = HoodieAvroHFileReaderImplBase.readAllRecords(hoodieHFileReader);
     records.forEach(entry -> {
       assertNull(((GenericRecord) entry).get(HoodieRecord.RECORD_KEY_METADATA_FIELD));

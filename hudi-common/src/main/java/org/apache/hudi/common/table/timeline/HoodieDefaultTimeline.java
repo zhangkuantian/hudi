@@ -63,6 +63,8 @@ public class HoodieDefaultTimeline implements HoodieTimeline {
   private List<HoodieInstant> instants;
   // for efficient #contains queries.
   private transient volatile Set<String> instantTimeSet;
+  // for efficient #isPendingClusterInstant queries
+  private transient volatile Set<String> pendingReplaceClusteringInstants;
   // for efficient #isBeforeTimelineStarts check.
   private transient volatile Option<HoodieInstant> firstNonSavepointCommit;
   private String timelineHash;
@@ -328,11 +330,18 @@ public class HoodieDefaultTimeline implements HoodieTimeline {
   }
 
   /**
+   * Get only pure commit and replace commits (inflight and completed) in the active timeline.
+   */
+  public HoodieTimeline getCommitAndReplaceTimeline() {
+    //TODO: Make sure this change does not break existing functionality.
+    return getTimelineOfActions(CollectionUtils.createSet(COMMIT_ACTION, REPLACE_COMMIT_ACTION));
+  }
+
+  /**
    * Get only pure commits (inflight and completed) in the active timeline.
    */
   public HoodieTimeline getCommitTimeline() {
-    //TODO: Make sure this change does not break existing functionality.
-    return getTimelineOfActions(CollectionUtils.createSet(COMMIT_ACTION, REPLACE_COMMIT_ACTION));
+    return getTimelineOfActions(CollectionUtils.createSet(COMMIT_ACTION));
   }
 
   /**
@@ -540,14 +549,7 @@ public class HoodieDefaultTimeline implements HoodieTimeline {
 
   @Override
   public boolean isPendingClusterInstant(String instantTime) {
-    HoodieTimeline potentialTimeline = getCommitsTimeline().filterPendingReplaceTimeline().filter(i -> i.getTimestamp().equals(instantTime));
-    if (potentialTimeline.countInstants() == 0) {
-      return false;
-    }
-    if (potentialTimeline.countInstants() > 1) {
-      throw new IllegalStateException("Multiple instants with same timestamp: " + potentialTimeline);
-    }
-    return ClusteringUtils.isClusteringInstant(this, potentialTimeline.firstInstant().get());
+    return getOrCreatePendingClusteringInstantSet().contains(instantTime);
   }
 
   @Override
@@ -574,6 +576,27 @@ public class HoodieDefaultTimeline implements HoodieTimeline {
       }
     }
     return this.instantTimeSet;
+  }
+
+  private Set<String> getOrCreatePendingClusteringInstantSet() {
+    if (this.pendingReplaceClusteringInstants == null) {
+      synchronized (this) {
+        if (this.pendingReplaceClusteringInstants == null) {
+          List<HoodieInstant> pendingReplaceInstants = getCommitsTimeline().filterPendingReplaceTimeline().getInstants();
+          // Validate that there are no instants with same timestamp
+          pendingReplaceInstants.stream().collect(Collectors.groupingBy(HoodieInstant::getTimestamp)).forEach((timestamp, instants) -> {
+            if (instants.size() > 1) {
+              throw new IllegalStateException("Multiple instants with same timestamp: " + timestamp + " instants: " + instants);
+            }
+          });
+          // Filter replace commits down to those that are due to clustering
+          this.pendingReplaceClusteringInstants = pendingReplaceInstants.stream()
+              .filter(instant -> ClusteringUtils.isClusteringInstant(this, instant))
+              .map(HoodieInstant::getTimestamp).collect(Collectors.toSet());
+        }
+      }
+    }
+    return this.pendingReplaceClusteringInstants;
   }
 
   /**

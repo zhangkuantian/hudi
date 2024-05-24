@@ -49,7 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import static org.apache.hudi.common.bootstrap.TestBootstrapIndex.generateBootstrapIndex;
+import static org.apache.hudi.common.bootstrap.index.TestBootstrapIndex.generateBootstrapIndex;
 import static org.apache.hudi.common.table.timeline.TimelineMetadataUtils.serializeCommitMetadata;
 import static org.apache.hudi.common.testutils.HoodieTestTable.makeNewCommitTime;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -131,10 +131,9 @@ public class HoodieCleanerTestBase extends HoodieClientTestBase {
 
       if (config.isMetadataTableEnabled() && simulateMetadataFailure) {
         // Simulate the failure of corresponding instant in the metadata table
-        HoodieTableMetaClient metadataMetaClient = HoodieTableMetaClient.builder()
-            .setBasePath(HoodieTableMetadata.getMetadataTableBasePath(metaClient.getBasePath()))
-            .setConf(metaClient.getHadoopConf())
-            .build();
+        HoodieTableMetaClient metadataMetaClient = HoodieTestUtils.createMetaClient(
+            metaClient.getStorageConf(),
+            HoodieTableMetadata.getMetadataTableBasePath(metaClient.getBasePath()));
         HoodieInstant deltaCommit = new HoodieInstant(false, HoodieTimeline.DELTA_COMMIT_ACTION, cleanInstantTs);
         metadataMetaClient.reloadActiveTimeline().revertToInflight(deltaCommit);
       }

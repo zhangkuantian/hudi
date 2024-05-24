@@ -23,9 +23,10 @@ import org.apache.hudi.common.bloom.{BloomFilter, BloomFilterFactory}
 import org.apache.hudi.common.config.HoodieStorageConfig
 import org.apache.hudi.common.config.HoodieStorageConfig.{BLOOM_FILTER_DYNAMIC_MAX_ENTRIES, BLOOM_FILTER_FPP_VALUE, BLOOM_FILTER_NUM_ENTRIES_VALUE, BLOOM_FILTER_TYPE}
 import org.apache.hudi.common.model.{HoodieFileFormat, HoodieRecord}
-import org.apache.hudi.common.util.{BaseFileUtils, Option}
-import org.apache.hudi.io.storage.{HoodieAvroParquetWriter, HoodieParquetConfig}
-import org.apache.hudi.storage.{StoragePath, HoodieStorage}
+import org.apache.hudi.common.util.{FileFormatUtils, Option}
+import org.apache.hudi.io.hadoop.HoodieAvroParquetWriter
+import org.apache.hudi.io.storage.HoodieParquetConfig
+import org.apache.hudi.storage.{HoodieStorage, StorageConfiguration, StoragePath}
 
 import org.apache.avro.Schema
 import org.apache.hadoop.conf.Configuration
@@ -36,23 +37,23 @@ import org.apache.spark.sql.{DataFrame, SQLContext}
 
 import java.util.Properties
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.collection.mutable._
 
 object SparkHelpers {
   @throws[Exception]
   def skipKeysAndWriteNewFile(instantTime: String,
-                              conf: Configuration,
+                              conf: StorageConfiguration[Configuration],
                               storage: HoodieStorage,
                               sourceFile: StoragePath,
                               destinationFile: StoragePath,
                               keysToSkip: Set[String]) {
-    val sourceRecords = BaseFileUtils.getInstance(HoodieFileFormat.PARQUET).readAvroRecords(conf, sourceFile)
-    val schema: Schema = sourceRecords.get(0).getSchema
+    val sourceRecords = FileFormatUtils.getInstance(HoodieFileFormat.PARQUET).readAvroRecords(conf, sourceFile).asScala
+    val schema: Schema = sourceRecords.head.getSchema
     val filter: BloomFilter = BloomFilterFactory.createBloomFilter(
       BLOOM_FILTER_NUM_ENTRIES_VALUE.defaultValue.toInt, BLOOM_FILTER_FPP_VALUE.defaultValue.toDouble,
       BLOOM_FILTER_DYNAMIC_MAX_ENTRIES.defaultValue.toInt, BLOOM_FILTER_TYPE.defaultValue);
-    val writeSupport: HoodieAvroWriteSupport[_] = new HoodieAvroWriteSupport(new AvroSchemaConverter(conf).convert(schema),
+    val writeSupport: HoodieAvroWriteSupport[_] = new HoodieAvroWriteSupport(new AvroSchemaConverter(conf.unwrap()).convert(schema),
       schema, Option.of(filter), new Properties())
     val parquetConfig: HoodieParquetConfig[HoodieAvroWriteSupport[_]] =
       new HoodieParquetConfig(
@@ -66,7 +67,7 @@ object SparkHelpers {
         HoodieStorageConfig.PARQUET_DICTIONARY_ENABLED.defaultValue)
 
     // Add current classLoad for config, if not will throw classNotFound of 'HoodieWrapperFileSystem'.
-    parquetConfig.getHadoopConf().setClassLoader(Thread.currentThread.getContextClassLoader)
+    conf.unwrap().setClassLoader(Thread.currentThread.getContextClassLoader)
 
     val writer = new HoodieAvroParquetWriter(destinationFile, parquetConfig, instantTime, new SparkTaskContextSupplier(), true)
     for (rec <- sourceRecords) {
@@ -129,17 +130,17 @@ class SparkHelper(sqlContext: SQLContext, fs: FileSystem) {
   }
 
   /**
-    *
-    * Checks that all the keys in the file, have been added to the bloom filter
-    * in the footer
-    *
-    * @param conf
-    * @param sqlContext
-    * @param file
-    * @return
-    */
-  def fileKeysAgainstBF(conf: Configuration, sqlContext: SQLContext, file: String): Boolean = {
-    val bf = BaseFileUtils.getInstance(HoodieFileFormat.PARQUET).readBloomFilterFromMetadata(conf, new StoragePath(file))
+   *
+   * Checks that all the keys in the file, have been added to the bloom filter
+   * in the footer
+   *
+   * @param conf
+   * @param sqlContext
+   * @param file
+   * @return
+   */
+  def fileKeysAgainstBF(conf: StorageConfiguration[_], sqlContext: SQLContext, file: String): Boolean = {
+    val bf = FileFormatUtils.getInstance(HoodieFileFormat.PARQUET).readBloomFilterFromMetadata(conf, new StoragePath(file))
     val foundCount = sqlContext.parquetFile(file)
       .select(s"`${HoodieRecord.RECORD_KEY_METADATA_FIELD}`")
       .collect().count(r => !bf.mightContain(r.getString(0)))

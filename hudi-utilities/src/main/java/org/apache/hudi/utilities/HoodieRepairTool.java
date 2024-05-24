@@ -20,10 +20,8 @@
 package org.apache.hudi.utilities;
 
 import org.apache.hudi.client.common.HoodieSparkEngineContext;
-import org.apache.hudi.common.config.SerializableConfiguration;
 import org.apache.hudi.common.config.TypedProperties;
 import org.apache.hudi.common.engine.HoodieEngineContext;
-import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieActiveTimeline;
 import org.apache.hudi.common.table.timeline.HoodieArchivedTimeline;
@@ -33,10 +31,12 @@ import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.collection.ImmutablePair;
 import org.apache.hudi.exception.HoodieIOException;
 import org.apache.hudi.hadoop.fs.HadoopFSUtils;
-import org.apache.hudi.storage.StoragePath;
-import org.apache.hudi.storage.HoodieStorage;
 import org.apache.hudi.metadata.FileSystemBackedTableMetadata;
 import org.apache.hudi.metadata.HoodieTableMetadata;
+import org.apache.hudi.storage.HoodieStorage;
+import org.apache.hudi.storage.HoodieStorageUtils;
+import org.apache.hudi.storage.StorageConfiguration;
+import org.apache.hudi.storage.StoragePath;
 import org.apache.hudi.table.repair.RepairUtils;
 
 import com.beust.jcommander.JCommander;
@@ -162,12 +162,12 @@ public class HoodieRepairTool {
         ? UtilHelpers.buildProperties(cfg.configs)
         : readConfigFromFileSystem(jsc, cfg);
     this.metaClient = HoodieTableMetaClient.builder()
-        .setConf(jsc.hadoopConfiguration()).setBasePath(cfg.basePath)
+        .setConf(HadoopFSUtils.getStorageConfWithCopy(jsc.hadoopConfiguration())).setBasePath(cfg.basePath)
         .setLoadActiveTimelineOnLoad(true)
         .build();
 
     this.tableMetadata = new FileSystemBackedTableMetadata(
-        context, metaClient.getTableConfig(), context.getHadoopConf(), cfg.basePath);
+        context, metaClient.getTableConfig(), context.getStorageConf(), cfg.basePath);
   }
 
   public boolean run() {
@@ -247,18 +247,18 @@ public class HoodieRepairTool {
   static boolean copyFiles(
       HoodieEngineContext context, List<String> relativeFilePaths, String sourceBasePath,
       String destBasePath) {
-    SerializableConfiguration conf = context.getHadoopConf();
+    StorageConfiguration<?> conf = context.getStorageConf();
     List<Boolean> allResults = context.parallelize(relativeFilePaths)
         .mapPartitions(iterator -> {
           List<Boolean> results = new ArrayList<>();
-          FileSystem fs = HadoopFSUtils.getFs(destBasePath, conf.get());
+          HoodieStorage storage = HoodieStorageUtils.getStorage(destBasePath, conf);
           iterator.forEachRemaining(filePath -> {
             boolean success = false;
-            Path sourcePath = new Path(sourceBasePath, filePath);
-            Path destPath = new Path(destBasePath, filePath);
+            StoragePath sourcePath = new StoragePath(sourceBasePath, filePath);
+            StoragePath destPath = new StoragePath(destBasePath, filePath);
             try {
-              if (!fs.exists(destPath)) {
-                FileIOUtils.copy(fs, sourcePath, destPath);
+              if (!storage.exists(destPath)) {
+                FileIOUtils.copy(storage, sourcePath, destPath);
                 success = true;
               }
             } catch (IOException e) {
@@ -287,15 +287,15 @@ public class HoodieRepairTool {
    */
   static List<String> listFilesFromBasePath(
       HoodieEngineContext context, String basePathStr, int expectedLevel, int parallelism) {
-    FileSystem fs = HadoopFSUtils.getFs(basePathStr, context.getHadoopConf().get());
+    FileSystem fs = HadoopFSUtils.getFs(basePathStr, context.getStorageConf());
     Path basePath = new Path(basePathStr);
-    return FSUtils.getFileStatusAtLevel(
+    return HadoopFSUtils.getFileStatusAtLevel(
             context, fs, basePath, expectedLevel, parallelism).stream()
         .filter(fileStatus -> {
           if (!fileStatus.isFile()) {
             return false;
           }
-          return FSUtils.isDataFile(fileStatus.getPath());
+          return HadoopFSUtils.isDataFile(fileStatus.getPath());
         })
         .map(fileStatus -> fileStatus.getPath().toString())
         .collect(Collectors.toList());
@@ -310,10 +310,10 @@ public class HoodieRepairTool {
    */
   static boolean deleteFiles(
       HoodieEngineContext context, String basePath, List<String> relativeFilePaths) {
-    SerializableConfiguration conf = context.getHadoopConf();
+    StorageConfiguration<?> conf = context.getStorageConf();
     return context.parallelize(relativeFilePaths)
         .mapPartitions(iterator -> {
-          FileSystem fs = HadoopFSUtils.getFs(basePath, conf.get());
+          FileSystem fs = HadoopFSUtils.getFs(basePath, conf);
           List<Boolean> results = new ArrayList<>();
           iterator.forEachRemaining(relativeFilePath -> {
             boolean success = false;
@@ -413,7 +413,7 @@ public class HoodieRepairTool {
     List<String> relativeFilePaths = listFilesFromBasePath(
         context, backupPathStr, partitionLevels, cfg.parallelism).stream()
         .map(filePath ->
-            FSUtils.getRelativePartitionPath(new Path(backupPathStr), new Path(filePath)))
+            HadoopFSUtils.getRelativePartitionPath(new Path(backupPathStr), new Path(filePath)))
         .collect(Collectors.toList());
     return restoreFiles(relativeFilePaths);
   }
