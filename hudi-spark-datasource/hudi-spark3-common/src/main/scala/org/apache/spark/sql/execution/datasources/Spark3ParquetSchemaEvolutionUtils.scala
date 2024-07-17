@@ -27,15 +27,14 @@ import org.apache.hudi.common.util
 import org.apache.hudi.common.util.InternalSchemaCache
 import org.apache.hudi.common.util.StringUtils.isNullOrEmpty
 import org.apache.hudi.common.util.collection.Pair
-import org.apache.hudi.hadoop.fs.HadoopFSUtils
 import org.apache.hudi.internal.schema.InternalSchema
 import org.apache.hudi.internal.schema.action.InternalSchemaMerger
 import org.apache.hudi.internal.schema.utils.{InternalSchemaUtils, SerDeHelper}
-
+import org.apache.hudi.storage.hadoop.HoodieHadoopStorage
 import org.apache.parquet.hadoop.metadata.FileMetaData
 import org.apache.spark.sql.HoodieSchemaUtils
-import org.apache.spark.sql.catalyst.expressions.codegen.GenerateUnsafeProjection
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.codegen.GenerateUnsafeProjection
 import org.apache.spark.sql.execution.datasources.Spark3ParquetSchemaEvolutionUtils.pruneInternalSchema
 import org.apache.spark.sql.execution.datasources.parquet.{HoodieParquetFileFormatHelper, ParquetReadSupport}
 import org.apache.spark.sql.sources._
@@ -60,8 +59,8 @@ abstract class Spark3ParquetSchemaEvolutionUtils(sharedConf: Configuration,
   private lazy val fileSchema: InternalSchema = if (shouldUseInternalSchema) {
     val commitInstantTime = FSUtils.getCommitTime(filePath.getName).toLong;
     val validCommits = sharedConf.get(SparkInternalSchemaConverter.HOODIE_VALID_COMMITS_LIST)
-    InternalSchemaCache.getInternalSchemaByVersionId(
-      commitInstantTime, tablePath, HadoopFSUtils.getStorageConf(sharedConf), if (validCommits == null) "" else validCommits)
+    InternalSchemaCache.getInternalSchemaByVersionId(commitInstantTime, tablePath,
+      new HoodieHadoopStorage(tablePath, sharedConf), if (validCommits == null) "" else validCommits)
   } else {
     null
   }

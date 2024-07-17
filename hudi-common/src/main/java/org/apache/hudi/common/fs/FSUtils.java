@@ -80,6 +80,7 @@ public class FSUtils {
   public static final Pattern LOG_FILE_PATTERN =
       Pattern.compile("^\\.(.+)_(.*)\\.(log|archive)\\.(\\d+)(_((\\d+)-(\\d+)-(\\d+))(.cdc)?)?");
   public static final Pattern PREFIX_BY_FILE_ID_PATTERN = Pattern.compile("^(.+)-(\\d+)");
+  private static final Pattern BASE_FILE_PATTERN = Pattern.compile("[a-zA-Z0-9-]+_[a-zA-Z0-9-]+_[0-9]+\\.[a-zA-Z0-9]+");
 
   private static final String LOG_FILE_EXTENSION = ".log";
 
@@ -221,12 +222,14 @@ public class FSUtils {
     }
   }
 
-  public static List<String> getAllPartitionPaths(HoodieEngineContext engineContext, String basePathStr,
+  public static List<String> getAllPartitionPaths(HoodieEngineContext engineContext,
+                                                  HoodieStorage storage,
+                                                  String basePathStr,
                                                   boolean useFileListingFromMetadata) {
     HoodieMetadataConfig metadataConfig = HoodieMetadataConfig.newBuilder()
         .enable(useFileListingFromMetadata)
         .build();
-    try (HoodieTableMetadata tableMetadata = HoodieTableMetadata.create(engineContext, metadataConfig, basePathStr)) {
+    try (HoodieTableMetadata tableMetadata = HoodieTableMetadata.create(engineContext, storage, metadataConfig, basePathStr)) {
       return tableMetadata.getAllPartitionPaths();
     } catch (Exception e) {
       throw new HoodieException("Error fetching partition paths from metadata table", e);
@@ -234,9 +237,10 @@ public class FSUtils {
   }
 
   public static List<String> getAllPartitionPaths(HoodieEngineContext engineContext,
+                                                  HoodieStorage storage,
                                                   HoodieMetadataConfig metadataConfig,
                                                   String basePathStr) {
-    try (HoodieTableMetadata tableMetadata = HoodieTableMetadata.create(engineContext, metadataConfig,
+    try (HoodieTableMetadata tableMetadata = HoodieTableMetadata.create(engineContext, storage, metadataConfig,
         basePathStr)) {
       return tableMetadata.getAllPartitionPaths();
     } catch (Exception e) {
@@ -244,11 +248,26 @@ public class FSUtils {
     }
   }
 
+  public static List<String> getAllPartitionPaths(HoodieEngineContext engineContext,
+                                                  HoodieStorage storage,
+                                                  StoragePath basePath,
+                                                  boolean useFileListingFromMetadata) {
+    return getAllPartitionPaths(engineContext, storage, basePath.toString(), useFileListingFromMetadata);
+  }
+
+  public static List<String> getAllPartitionPaths(HoodieEngineContext engineContext,
+                                                  HoodieStorage storage,
+                                                  HoodieMetadataConfig metadataConfig,
+                                                  StoragePath basePath) {
+    return getAllPartitionPaths(engineContext, storage, metadataConfig, basePath.toString());
+  }
+
   public static Map<String, List<StoragePathInfo>> getFilesInPartitions(HoodieEngineContext engineContext,
+                                                                        HoodieStorage storage,
                                                                         HoodieMetadataConfig metadataConfig,
                                                                         String basePathStr,
                                                                         String[] partitionPaths) {
-    try (HoodieTableMetadata tableMetadata = HoodieTableMetadata.create(engineContext, metadataConfig,
+    try (HoodieTableMetadata tableMetadata = HoodieTableMetadata.create(engineContext, storage, metadataConfig,
         basePathStr)) {
       return tableMetadata.getAllFilesInPartitions(Arrays.asList(partitionPaths));
     } catch (Exception ex) {
@@ -410,7 +429,10 @@ public class FSUtils {
 
   public static boolean isBaseFile(StoragePath path) {
     String extension = getFileExtension(path.getName());
-    return HoodieFileFormat.BASE_FILE_EXTENSIONS.contains(extension);
+    if (HoodieFileFormat.BASE_FILE_EXTENSIONS.contains(extension)) {
+      return BASE_FILE_PATTERN.matcher(path.getName()).matches();
+    }
+    return false;
   }
 
   public static boolean isLogFile(StoragePath logPath) {
