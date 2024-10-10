@@ -70,7 +70,7 @@ elif [[ ${SPARK_RUNTIME} == 'spark3.5.0' && ${SCALA_PROFILE} == 'scala-2.12' ]];
   HADOOP_VERSION=3.3.5
   HIVE_VERSION=3.1.3
   DERBY_VERSION=10.14.1.0
-  FLINK_VERSION=1.18.0
+  FLINK_VERSION=1.19.0
   SPARK_VERSION=3.5.0
   SPARK_HADOOP_VERSION=3
   CONFLUENT_VERSION=5.5.12
@@ -80,7 +80,7 @@ elif [[ ${SPARK_RUNTIME} == 'spark3.5.0' && ${SCALA_PROFILE} == 'scala-2.13' ]];
   HADOOP_VERSION=3.3.5
   HIVE_VERSION=3.1.3
   DERBY_VERSION=10.14.1.0
-  FLINK_VERSION=1.18.0
+  FLINK_VERSION=1.19.0
   SPARK_VERSION=3.5.0
   SPARK_HADOOP_VERSION=3
   CONFLUENT_VERSION=5.5.12
@@ -100,7 +100,7 @@ elif [[ ${SPARK_RUNTIME} == 'spark3.5.1' && ${SCALA_PROFILE} == 'scala-2.13' ]];
   HADOOP_VERSION=3.3.5
   HIVE_VERSION=3.1.3
   DERBY_VERSION=10.14.1.0
-  FLINK_VERSION=1.18.0
+  FLINK_VERSION=1.19.0
   SPARK_VERSION=3.5.1
   SPARK_HADOOP_VERSION=3
   CONFLUENT_VERSION=5.5.12
@@ -132,15 +132,7 @@ else
   HUDI_KAFKA_CONNECT_BUNDLE_NAME=hudi-kafka-connect-bundle
   HUDI_METASERVER_SERVER_BUNDLE_NAME=hudi-metaserver-server-bundle
 
-  if [[ ${SPARK_PROFILE} == 'spark' ]]; then
-    HUDI_SPARK_BUNDLE_NAME=hudi-spark-bundle_2.11
-    HUDI_UTILITIES_BUNDLE_NAME=hudi-utilities-bundle_2.11
-    HUDI_UTILITIES_SLIM_BUNDLE_NAME=hudi-utilities-slim-bundle_2.11
-  elif [[ ${SPARK_PROFILE} == 'spark2.4' ]]; then
-    HUDI_SPARK_BUNDLE_NAME=hudi-spark2.4-bundle_2.11
-    HUDI_UTILITIES_BUNDLE_NAME=hudi-utilities-bundle_2.11
-    HUDI_UTILITIES_SLIM_BUNDLE_NAME=hudi-utilities-slim-bundle_2.11
-  elif [[ ${SPARK_PROFILE} == 'spark3.3' ]]; then
+  if [[ ${SPARK_PROFILE} == 'spark3.3' ]]; then
     HUDI_SPARK_BUNDLE_NAME=hudi-spark3.3-bundle_2.12
     HUDI_UTILITIES_BUNDLE_NAME=hudi-utilities-bundle_2.12
     HUDI_UTILITIES_SLIM_BUNDLE_NAME=hudi-utilities-slim-bundle_2.12
@@ -172,6 +164,8 @@ else
     HUDI_FLINK_BUNDLE_NAME=hudi-flink1.17-bundle
   elif [[ ${FLINK_PROFILE} == 'flink1.18' ]]; then
     HUDI_FLINK_BUNDLE_NAME=hudi-flink1.18-bundle
+  elif [[ ${FLINK_PROFILE} == 'flink1.19' ]]; then
+    HUDI_FLINK_BUNDLE_NAME=hudi-flink1.19-bundle
   fi
 
   echo "Downloading bundle jars from staging repo orgapachehudi-$STAGING_REPO_NUM ..."

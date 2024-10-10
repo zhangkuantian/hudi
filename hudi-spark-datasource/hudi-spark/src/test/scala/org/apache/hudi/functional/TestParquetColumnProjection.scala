@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.sources.BaseRelation
 import org.apache.spark.sql.{Dataset, HoodieUnsafeUtils, Row, SaveMode}
 import org.junit.jupiter.api.Assertions.{assertEquals, assertFalse, assertTrue, fail}
-import org.junit.jupiter.api.{Disabled, Tag, Test}
+import org.junit.jupiter.api.{Tag, Test}
 
 import scala.collection.JavaConverters._
 import scala.math.abs
@@ -60,7 +60,6 @@ class TestParquetColumnProjection extends SparkClientFunctionalTestHarness with 
 
   override def conf: SparkConf = conf(getSparkSqlConf)
 
-  @Disabled("Currently disabled b/c of the fallback to HadoopFsRelation")
   @Test
   def testBaseFileOnlyViewRelation(): Unit = {
     val tablePath = s"$basePath/cow"
@@ -77,13 +76,8 @@ class TestParquetColumnProjection extends SparkClientFunctionalTestHarness with 
           ("rider", 2363),
           ("rider,driver", 2463),
           ("rider,driver,tip_history", 3428))
-      else if (HoodieSparkUtils.isSpark2)
-        Array(
-          ("rider", 2474),
-          ("rider,driver", 2614),
-          ("rider,driver,tip_history", 3629))
       else
-        fail("Only Spark 3 and Spark 2 are currently supported")
+        fail("Only Spark 3 is currently supported")
 
     // Test COW / Snapshot
     runTest(tableState, DataSourceReadOptions.QUERY_TYPE_SNAPSHOT_OPT_VAL, "", projectedColumnsReadStats)
@@ -106,13 +100,8 @@ class TestParquetColumnProjection extends SparkClientFunctionalTestHarness with 
           ("rider", 2452),
           ("rider,driver", 2552),
           ("rider,driver,tip_history", 3517))
-      else if (HoodieSparkUtils.isSpark2)
-        Array(
-          ("rider", 2595),
-          ("rider,driver", 2735),
-          ("rider,driver,tip_history", 3750))
       else
-        fail("Only Spark 3 and Spark 2 are currently supported")
+        fail("Only Spark 3 is currently supported")
 
     // Test MOR / Snapshot / Skip-merge
     runTest(tableState, DataSourceReadOptions.QUERY_TYPE_SNAPSHOT_OPT_VAL, DataSourceReadOptions.REALTIME_SKIP_MERGE_OPT_VAL, projectedColumnsReadStats)
@@ -128,13 +117,8 @@ class TestParquetColumnProjection extends SparkClientFunctionalTestHarness with 
           ("rider", 2363),
           ("rider,driver", 2463),
           ("rider,driver,tip_history", 3428))
-      else if (HoodieSparkUtils.isSpark2)
-        Array(
-          ("rider", 2474),
-          ("rider,driver", 2614),
-          ("rider,driver,tip_history", 3629))
       else
-        fail("Only Spark 3 and Spark 2 are currently supported")
+        fail("Only Spark 3 is currently supported")
 
     // Test MOR / Read Optimized
     // TODO(HUDI-3896) re-enable
@@ -162,13 +146,8 @@ class TestParquetColumnProjection extends SparkClientFunctionalTestHarness with 
           ("rider", 2452),
           ("rider,driver", 2552),
           ("rider,driver,tip_history", 3517))
-      else if (HoodieSparkUtils.isSpark2)
-        Array(
-          ("rider", 2595),
-          ("rider,driver", 2735),
-          ("rider,driver,tip_history", 3750))
       else
-        fail("Only Spark 3 and Spark 2 are currently supported")
+        fail("Only Spark 3 is currently supported")
 
     // Test MOR / Snapshot / Skip-merge
     runTest(tableState, DataSourceReadOptions.QUERY_TYPE_SNAPSHOT_OPT_VAL, DataSourceReadOptions.REALTIME_SKIP_MERGE_OPT_VAL, projectedColumnsReadStats)
@@ -184,13 +163,8 @@ class TestParquetColumnProjection extends SparkClientFunctionalTestHarness with 
           ("rider", 2363),
           ("rider,driver", 2463),
           ("rider,driver,tip_history", 3428))
-      else if (HoodieSparkUtils.isSpark2)
-        Array(
-          ("rider", 2474),
-          ("rider,driver", 2614),
-          ("rider,driver,tip_history", 3629))
       else
-        fail("Only Spark 3 and Spark 2 are currently supported")
+        fail("Only Spark 3 is currently supported")
 
     // Test MOR / Read Optimized
     // TODO(HUDI-3896) re-enable
@@ -223,13 +197,8 @@ class TestParquetColumnProjection extends SparkClientFunctionalTestHarness with 
         ("rider", 2452),
         ("rider,driver", 2552),
         ("rider,driver,tip_history", 3517))
-    else if (HoodieSparkUtils.isSpark2)
-      Array(
-        ("rider", 2595),
-        ("rider,driver", 2735),
-        ("rider,driver,tip_history", 3750))
     else
-      fail("Only Spark 3 and Spark 2 are currently supported")
+      fail("Only Spark 3 is currently supported")
 
     // Stats for the reads fetching _all_ columns (note, how amount of bytes read
     // is invariant of the # of columns)
@@ -239,13 +208,8 @@ class TestParquetColumnProjection extends SparkClientFunctionalTestHarness with 
         ("rider", 14167),
         ("rider,driver", 14167),
         ("rider,driver,tip_history", 14167))
-    else if (HoodieSparkUtils.isSpark2)
-      Array(
-        ("rider", 14160),
-        ("rider,driver", 14160),
-        ("rider,driver,tip_history", 14160))
     else
-      fail("Only Spark 3 and Spark 2 are currently supported")
+      fail("Only Spark 3 is currently supported")
 
     // Test MOR / Snapshot / Skip-merge
     runTest(tableState, DataSourceReadOptions.QUERY_TYPE_SNAPSHOT_OPT_VAL, DataSourceReadOptions.REALTIME_SKIP_MERGE_OPT_VAL, projectedColumnsReadStats)
@@ -276,13 +240,8 @@ class TestParquetColumnProjection extends SparkClientFunctionalTestHarness with 
           ("rider", 4219),
           ("rider,driver", 4279),
           ("rider,driver,tip_history", 5186))
-      else if (HoodieSparkUtils.isSpark2)
-        Array(
-          ("rider", 4430),
-          ("rider,driver", 4530),
-          ("rider,driver,tip_history", 5487))
       else
-        fail("Only Spark 3 and Spark 2 are currently supported")
+        fail("Only Spark 3 is currently supported")
 
     val incrementalOpts: Map[String, String] = Map(
       DataSourceReadOptions.BEGIN_INSTANTTIME.key -> "001"
