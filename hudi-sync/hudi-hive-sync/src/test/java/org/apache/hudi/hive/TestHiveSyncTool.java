@@ -27,7 +27,7 @@ import org.apache.hudi.common.model.HoodieSyncTableStrategy;
 import org.apache.hudi.common.model.WriteOperationType;
 import org.apache.hudi.common.table.HoodieTableMetaClient;
 import org.apache.hudi.common.table.timeline.HoodieInstant;
-import org.apache.hudi.common.testutils.FileCreateUtils;
+import org.apache.hudi.common.testutils.FileCreateUtilsLegacy;
 import org.apache.hudi.common.testutils.HoodieTestUtils;
 import org.apache.hudi.common.testutils.InProcessTimeGenerator;
 import org.apache.hudi.common.testutils.NetworkTestUtils;
@@ -38,6 +38,7 @@ import org.apache.hudi.common.util.StringUtils;
 import org.apache.hudi.common.util.collection.ImmutablePair;
 import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.config.metrics.HoodieMetricsConfig;
+import org.apache.hudi.exception.HoodieException;
 import org.apache.hudi.hadoop.HoodieParquetInputFormat;
 import org.apache.hudi.hadoop.realtime.HoodieParquetRealtimeInputFormat;
 import org.apache.hudi.hadoop.utils.HoodieInputFormatUtils;
@@ -88,8 +89,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static org.apache.hudi.common.table.HoodieTableMetaClient.TIMELINEFOLDER_NAME;
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.COMMIT_ACTION;
 import static org.apache.hudi.common.table.timeline.HoodieTimeline.DELTA_COMMIT_ACTION;
+import static org.apache.hudi.common.testutils.HoodieTestUtils.INSTANT_FILE_NAME_GENERATOR;
 import static org.apache.hudi.hadoop.fs.HadoopFSUtils.getRelativePartitionPath;
 import static org.apache.hudi.hive.HiveSyncConfig.HIVE_SYNC_FILTER_PUSHDOWN_ENABLED;
 import static org.apache.hudi.hive.HiveSyncConfig.RECREATE_HIVE_TABLE_ON_ERROR;
@@ -343,8 +346,8 @@ public class TestHiveSyncTool {
     assertEquals(5, hiveClient.getAllPartitions(HiveTestUtil.TABLE_NAME).size(),
         "No new partition should be added");
     hiveClient.addPartitionsToTable(HiveTestUtil.TABLE_NAME, newPartition);
-    FileCreateUtils.createPartitionMetaFile(basePath, "2050/01/01");
-    FileCreateUtils.createPartitionMetaFile(basePath, "2040/02/01");
+    FileCreateUtilsLegacy.createPartitionMetaFile(basePath, "2050/01/01");
+    FileCreateUtilsLegacy.createPartitionMetaFile(basePath, "2040/02/01");
     assertEquals(7, hiveClient.getAllPartitions(HiveTestUtil.TABLE_NAME).size(),
         "New partition should be added");
 
@@ -463,7 +466,7 @@ public class TestHiveSyncTool {
     assertEquals(
         Arrays.asList("400", "700", "800"),
         metaClient.getActiveTimeline().getInstants().stream()
-            .map(HoodieInstant::getTimestamp).sorted()
+            .map(HoodieInstant::requestedTime).sorted()
             .collect(Collectors.toList()));
 
     reInitHiveSyncClient();
@@ -1391,7 +1394,7 @@ public class TestHiveSyncTool {
     assertEquals(1, hiveClient.getAllPartitions(HiveTestUtil.TABLE_NAME).size(),
         "No new partition should be added");
     hiveClient.addPartitionsToTable(HiveTestUtil.TABLE_NAME, newPartition);
-    FileCreateUtils.createPartitionMetaFile(basePath, "2050/01/01");
+    FileCreateUtilsLegacy.createPartitionMetaFile(basePath, "2050/01/01");
     assertEquals(2, hiveClient.getAllPartitions(HiveTestUtil.TABLE_NAME).size(),
         "New partition should be added");
 
@@ -1694,6 +1697,55 @@ public class TestHiveSyncTool {
         "The last commit that was synced should be 103");
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {"hiveql", "hms", "jdbc"})
+  void testMORTableWithPartitionEvolutionThrowsException(String syncMode) throws Exception {
+    hiveSyncProps.setProperty(HIVE_SYNC_MODE.key(), syncMode);
+    hiveSyncProps.setProperty(HIVE_SYNC_FILTER_PUSHDOWN_ENABLED.key(), "true");
+    hiveSyncProps.setProperty(META_SYNC_PARTITION_FIELDS.key(), "");
+    hiveSyncProps.setProperty(RECREATE_HIVE_TABLE_ON_ERROR.key(), "false");
+
+    String instantTime = "100";
+    String deltaCommitTime = "101";
+    String snapshotTableName = HiveTestUtil.TABLE_NAME + HiveSyncTool.SUFFIX_SNAPSHOT_TABLE;
+    HiveTestUtil.createMORTable(instantTime, deltaCommitTime, 0, true, true);
+    reInitHiveSyncClient();
+    assertFalse(hiveClient.tableExists(snapshotTableName),
+        "Table " + HiveTestUtil.TABLE_NAME + HiveSyncTool.SUFFIX_SNAPSHOT_TABLE
+            + " should not exist initially");
+
+    // Lets do the sync
+    reSyncHiveTable();
+
+    assertTrue(hiveClient.tableExists(snapshotTableName),
+        "Table " + HiveTestUtil.TABLE_NAME + HiveSyncTool.SUFFIX_SNAPSHOT_TABLE
+            + " should exist after sync completes");
+
+
+    assertEquals(hiveClient.getMetastoreSchema(snapshotTableName).size(),
+        SchemaTestUtil.getSimpleSchema().getFields().size()
+            + HoodieRecord.HOODIE_META_COLUMNS.size(),
+        "Hive Schema should match the table schema + partition field");
+
+
+    assertEquals(0, hiveClient.getAllPartitions(snapshotTableName).size(),
+        "Table partitions should match the number of partitions we wrote");
+    assertEquals(deltaCommitTime, hiveClient.getLastCommitTimeSynced(snapshotTableName).get(),
+        "The last commit that was synced should be updated in the TBLPROPERTIES");
+
+
+    hiveSyncProps.setProperty(META_SYNC_PARTITION_FIELDS.key(), "datestr");
+    // Now lets create more partitions and these are the only ones which needs to be synced
+    ZonedDateTime dateTime = ZonedDateTime.now().plusDays(6);
+    String commitTime2 = "102";
+    String deltaCommitTime2 = "103";
+
+    HiveTestUtil.addMORPartitions(1, true, false, true, dateTime, commitTime2, deltaCommitTime2);
+    // Lets do the sync
+    reInitHiveSyncClient();
+    assertThrows(HoodieException.class, this::reSyncHiveTable, "The sync operation should throw exception due to partition mismatch and table recreation is disabled");
+  }
+
   @Test
   public void testConnectExceptionIgnoreConfigSet() throws IOException, URISyntaxException {
     String instantTime = "100";
@@ -1780,9 +1832,9 @@ public class TestHiveSyncTool {
     HiveSyncTool tool = new HiveSyncTool(hiveSyncProps, getHiveConf());
     // now delete the evolved commit instant
     Path fullPath = new Path(HiveTestUtil.basePath + "/" + HoodieTableMetaClient.METAFOLDER_NAME + "/"
-        + hiveClient.getActiveTimeline().getInstantsAsStream()
-        .filter(inst -> inst.getTimestamp().equals(commitTime2))
-        .findFirst().get().getFileName());
+        + TIMELINEFOLDER_NAME + "/" + INSTANT_FILE_NAME_GENERATOR.getFileName(hiveClient.getActiveTimeline().getInstantsAsStream()
+        .filter(inst -> inst.requestedTime().equals(commitTime2))
+        .findFirst().get()));
     assertTrue(HiveTestUtil.fileSystem.delete(fullPath, false));
 
     try {
@@ -1824,9 +1876,9 @@ public class TestHiveSyncTool {
     reInitHiveSyncClient();
     // now delete the evolved commit instant
     Path fullPath = new Path(HiveTestUtil.basePath + "/" + HoodieTableMetaClient.METAFOLDER_NAME + "/"
-        + hiveClient.getActiveTimeline().getInstantsAsStream()
-        .filter(inst -> inst.getTimestamp().equals(commitTime2))
-        .findFirst().get().getFileName());
+        + TIMELINEFOLDER_NAME + "/" + INSTANT_FILE_NAME_GENERATOR.getFileName(hiveClient.getActiveTimeline().getInstantsAsStream()
+        .filter(inst -> inst.requestedTime().equals(commitTime2))
+        .findFirst().get()));
     assertTrue(HiveTestUtil.fileSystem.delete(fullPath, false));
     try {
       reSyncHiveTable();
@@ -1977,9 +2029,7 @@ public class TestHiveSyncTool {
   }
 
   private String getLastCommitCompletionTimeSynced() {
-    return hiveClient.getActiveTimeline()
-        .getInstantsOrderedByCompletionTime()
-        .skip(hiveClient.getActiveTimeline().countInstants() - 1).findFirst().get().getCompletionTime();
+    return hiveClient.getActiveTimeline().getLatestCompletionTime().get();
   }
 
   private void reInitHiveSyncClient() {
